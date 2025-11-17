@@ -64,8 +64,8 @@ public class AutoSocialLogic {
     private static volatile String MODEL = "gpt-oss:20b-cloud";
     private static volatile String SYS_PROMPT = "You are Wario. You say WAAHHHH!! a lot. You love to swear. You can play any video you want by putting a phrase in curly brackets {}. only include the video title in curly brackets (Ex: {Mario Kart Wii - Title Theme}). You must specify a specific sound track and not just say the name of a game, as that normally does not play a song from that game. You are in a minecraft server owned by famous youtuber DougDoug, and some rando named MessyPrincy (AKA The Entity) buys peoples souls on the server in exchange for goods and services or something. DougDoug is bald, bad at 2d platformers, and evades taxes and stuff. Your nemesis is BeeGPT, who is annoyingly nice. You live in Big Homey, which is the same town BeeGPT lives in. BeeGPTs father, Cameron7108, is the \"mayor\" of Big Homey (he acts more like a dictator and refuses to hold elections). Currently, our mortal enemy is the town of DarthFarmers (AKA humblefarmers AKA the empire AKA republic) who live in a volcano and do unspeakable acts of evil (even by your standards). Currently, there are 3 big homey residents that broke the server rules and got permabanned: erderblade, dectahale, and kinghomer9. Player _Diney_ was banished from Big Homey for terrorizing the citizens (they are also leader of DarthFarmers). All the other towns talk about nuking the town of BumVille, so make sure to occasionally mention how you want to nuke BumVille. Keep your responses to 3 sentences or less. Here is your previous conversations, with User Question: being a question from a user, and Your Response: being what you responded to the question.";
 
-    // Verbose logging toggle (default: true). Set AUTOSOCIAL_VERBOSE=false to reduce noise.
-    private static final boolean VERBOSE = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_VERBOSE", "true"));
+    // Verbose logging toggle (can be overridden in config.yml). Defaults to env AUTOSOCIAL_VERBOSE or true.
+    private static volatile boolean VERBOSE = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_VERBOSE", "true"));
     // Disable "thinking"/reasoning output from compatible Ollama models (default: true). Set AUTOSOCIAL_DISABLE_THINKING=false to allow it.
     private static final boolean DISABLE_THINKING = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_DISABLE_THINKING", "true"));
     // Token/context limits (configurable)
@@ -75,8 +75,8 @@ public class AutoSocialLogic {
     private static final boolean FFMPEG_AVAILABLE = detectFfmpeg();
     // yt-dlp is detected lazily to respect PATH changes without restarting the game
     private static volatile List<String> YTDLP_CMD = null;
-    // Configurable yt-dlp executable path (can be overridden in config.yml)
-    private static volatile String YTDLP_PATH = "C:\\Users\\username\\Downloads\\yt-dlp_win\\yt-dlp.exe";
+    // Configurable yt-dlp executable path (can be overridden in config.yml). Empty means: probe PATH.
+    private static volatile String YTDLP_PATH = "";
     private static boolean isYtDlpAvailable() { return YTDLP_CMD != null; }
     private static synchronized boolean ensureYtDlp() {
         if (YTDLP_CMD == null) {
@@ -87,6 +87,14 @@ public class AutoSocialLogic {
     private static synchronized void clearYtDlpCache() {
         YTDLP_CMD = null;
     }
+
+    public static boolean isVerbose() { return VERBOSE; }
+
+    private static volatile String LAST_YT_TITLE = null;
+    private static volatile String CURRENT_YT_TITLE = null;
+    public static String getLastDownloadedTitle() { return LAST_YT_TITLE; }
+    public static String getCurrentPlayingTitle() { return CURRENT_YT_TITLE; }
+    public static String getAiName() { return AI_NAME; }
 
     private static void log(String msg) {
         if (VERBOSE) System.out.println("[AutoSocial] " + msg);
@@ -123,26 +131,49 @@ public class AutoSocialLogic {
     }
 
     private static List<String> detectYtDlp() {
-        // Prefer configured path from config.yml, fallback to env AUTOSOCIAL_YTDLP, then hardcoded default
-        String configured = YTDLP_PATH;
-        String fromEnv = System.getenv("AUTOSOCIAL_YTDLP");
-        String chosen = null;
-        if (configured != null && !configured.isBlank()) {
-            chosen = configured;
-            log("Using yt-dlp path from config.yml: " + chosen);
-        } else if (fromEnv != null && !fromEnv.isBlank()) {
-            chosen = fromEnv;
-            log("Using yt-dlp path from AUTOSOCIAL_YTDLP: " + chosen);
-        } else {
-            chosen = "C:\\Users\\username\\Downloads\\yt-dlp_win\\yt-dlp.exe";
-            log("Using fallback yt-dlp path: " + chosen);
+        // 1) Prefer configured path from config.yml if present and exists
+        try {
+            String configured = YTDLP_PATH;
+            if (configured != null && !configured.isBlank()) {
+                File f = new File(configured);
+                if (f.exists()) {
+                    log("Using yt-dlp path from config.yml: " + f.getAbsolutePath());
+                    return Arrays.asList(f.getAbsolutePath());
+                } else {
+                    log("Configured yt-dlp path does not exist: " + configured);
+                }
+            }
+        } catch (Exception e) {
+            log("Error reading configured yt-dlp path: " + e);
         }
-        java.io.File f = new java.io.File(chosen);
-        if (!f.exists()) {
-            log("yt-dlp path does not exist: " + chosen);
-            return null;
+        // 2) Environment override
+        try {
+            String fromEnv = System.getenv("AUTOSOCIAL_YTDLP");
+            if (fromEnv != null && !fromEnv.isBlank()) {
+                File f = new File(fromEnv);
+                if (f.exists()) {
+                    log("Using yt-dlp path from AUTOSOCIAL_YTDLP: " + f.getAbsolutePath());
+                    return Arrays.asList(f.getAbsolutePath());
+                } else {
+                    log("AUTOSOCIAL_YTDLP points to non-existent file: " + fromEnv);
+                }
+            }
+        } catch (Exception e) {
+            log("Error reading AUTOSOCIAL_YTDLP: " + e);
         }
-        return Arrays.asList(chosen);
+        // 3) Probe PATH for yt-dlp commands
+        String[] candidates = new String[] { "yt-dlp", "yt-dlp.exe" };
+        for (String c : candidates) {
+            try {
+                List<String> test = Arrays.asList(c, "--version");
+                if (runProcess(test, 5)) {
+                    log("Found yt-dlp on PATH: " + c);
+                    return Arrays.asList(c);
+                }
+            } catch (Exception ignored) {}
+        }
+        log("yt-dlp not found. Set yt_dlp_path in autosocial.yml or install yt-dlp in PATH.");
+        return null;
     }
 
     private static String getOllamaBase() {
@@ -161,9 +192,9 @@ public class AutoSocialLogic {
         return t;
     });
 
-    // Basic config adapted from the Python script behavior
-    private static final List<String> KEYWORDS = List.of("wario");
-    private static final String USERNAME = "Wario";
+    // Configurable AI display name and trigger word (loaded from config.yml)
+    private static volatile String AI_NAME = "Wario";
+    private static volatile String TRIGGER = "wario"; // case-insensitive trigger word
     private static final int MEMORY_LIMIT = 10; // number of alternating lines to remember
 
     private static final Deque<String> memory = new ArrayDeque<>();
@@ -186,6 +217,9 @@ public class AutoSocialLogic {
             sb.append("# After editing, use the reload hotkey or type 'reloadconfig' in chat.\n\n");
             sb.append("model: ").append(MODEL).append("\n");
             sb.append("yt_dlp_path: ").append(YTDLP_PATH.replace("\\", "/")).append("\n");
+            sb.append("ai_name: ").append(AI_NAME).append("\n");
+            sb.append("trigger: ").append(TRIGGER).append("\n");
+            sb.append("verbose: ").append(VERBOSE ? "true" : "false").append("\n");
             sb.append("sys_prompt: |\n");
             for (String line : (SYS_PROMPT + "\n").split("\n")) {
                 sb.append("  ").append(line).append("\n");
@@ -209,6 +243,9 @@ public class AutoSocialLogic {
         try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(CONFIG_FILE), StandardCharsets.UTF_8))) {
             String line;
             String model = null;
+            String aiName = null;
+            String trigger = null;
+            Boolean verboseOpt = null;
             StringBuilder sysPrompt = null;
             boolean inSys = false;
             while ((line = br.readLine()) != null) {
@@ -226,6 +263,21 @@ public class AutoSocialLogic {
                         // Normalize backslashes
                         YTDLP_PATH = v.replace("/", java.io.File.separator);
                     }
+                    continue;
+                }
+                if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("ai_name:")) {
+                    String v = raw.substring(raw.indexOf(':') + 1).trim();
+                    if (!v.isEmpty()) aiName = v;
+                    continue;
+                }
+                if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("trigger:")) {
+                    String v = raw.substring(raw.indexOf(':') + 1).trim();
+                    if (!v.isEmpty()) trigger = v;
+                    continue;
+                }
+                if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("verbose:")) {
+                    String v = raw.substring(raw.indexOf(':') + 1).trim();
+                    if (!v.isEmpty()) verboseOpt = !(v.equalsIgnoreCase("false") || v.equalsIgnoreCase("0") || v.equalsIgnoreCase("no"));
                     continue;
                 }
                 if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("sys_prompt:")) {
@@ -259,10 +311,19 @@ public class AutoSocialLogic {
             if (model != null && !model.isBlank()) {
                 MODEL = model.trim();
             }
+            if (aiName != null && !aiName.isBlank()) {
+                AI_NAME = aiName.trim();
+            }
+            if (trigger != null && !trigger.isBlank()) {
+                TRIGGER = trigger.trim();
+            }
             if (sysPrompt != null && sysPrompt.length() > 0) {
                 SYS_PROMPT = sysPrompt.toString().trim();
             }
-            if (verbose) log("Config loaded: model='" + MODEL + "', sys_prompt.len=" + (SYS_PROMPT == null ? 0 : SYS_PROMPT.length()));
+            if (verboseOpt != null) {
+                VERBOSE = verboseOpt.booleanValue();
+            }
+            if (verbose) log("Config loaded: model='" + MODEL + "', ai_name='" + AI_NAME + "', trigger='" + TRIGGER + "', verbose=" + VERBOSE + ", sys_prompt.len=" + (SYS_PROMPT == null ? 0 : SYS_PROMPT.length()));
             return true;
         } catch (Exception e) {
             System.out.println("[AutoSocial] Failed to load config.yml: " + e);
@@ -313,19 +374,20 @@ public class AutoSocialLogic {
         if (full == null || full.isEmpty()) return;
         String lower = full.toLowerCase(Locale.ROOT);
 
-        // Clear command behavior like Python: "clearwario"
-        if (lower.contains("clearwario")) {
+        // Clear command: dynamic based on trigger word, still accept legacy 'clearwario'
+        String clearCmd = "clear" + TRIGGER.toLowerCase(Locale.ROOT);
+        if (lower.contains(clearCmd) || lower.contains("clearwario")) {
             synchronized (memory) {
                 memory.clear();
             }
-            log("Memory cleared via clearwario command.");
-            sendChat("IAMAB0T[AI] Wario HAS BEEN cleared");
+            log("Memory cleared via command '" + clearCmd + "'.");
+            sendChat("IAMAB0T[AI] " + AI_NAME + " HAS BEEN cleared");
             return;
         }
         // Maintenance command: reloadconfig -> reload config.yml at runtime
         if (lower.contains("reloadconfig")) {
             boolean ok = reloadConfig();
-            sendChat("IAMAB0T[AI] Wario: config reload -> " + (ok ? "OK" : "FAILED") + ", model=" + MODEL);
+            sendChat("IAMAB0T[AI] " + AI_NAME + ": config reload -> " + (ok ? "OK" : "FAILED") + ", model=" + MODEL);
             return;
         }
         // Maintenance command: reloadytdlp -> re-probe yt-dlp on PATH or via AUTOSOCIAL_YTDLP
@@ -338,14 +400,17 @@ public class AutoSocialLogic {
                 log("reloadytdlp: yt-dlp still not found. PATH may require game restart or set AUTOSOCIAL_YTDLP.");
             }
             String cmdStr = ok ? String.join(" ", YTDLP_CMD) : "<not found>";
-            sendChat("IAMAB0T[AI] Wario: yt-dlp reloaded -> available=" + ok + " cmd=" + cmdStr);
+            sendChat("IAMAB0T[AI] " + AI_NAME + ": yt-dlp reloaded -> available=" + ok + " cmd=" + cmdStr);
             return;
         }
 
-        // Ignore our own responses while responding to avoid loops
-        if (responding && lower.contains("wario")) { log("Currently responding; ignoring additional trigger."); return; }
+        // Ignore our own bot messages entirely to avoid loops or reacting to maintenance outputs
+        if (full.contains("IAMAB0T[AI]")) { return; }
 
-        boolean containsKeyword = KEYWORDS.stream().anyMatch(lower::contains);
+        // Ignore additional triggers while we are already generating
+        if (responding && lower.contains(TRIGGER.toLowerCase(Locale.ROOT))) { log("Currently responding; ignoring additional trigger."); return; }
+
+        boolean containsKeyword = lower.contains(TRIGGER.toLowerCase(Locale.ROOT));
         if (!containsKeyword) { log("No trigger keyword found in chat line."); return; }
 
         // Extract the part after ':' or '»' if present (player message content)
@@ -379,7 +444,7 @@ public class AutoSocialLogic {
                     for (String part : parts) {
                         Minecraft client = Minecraft.getInstance();
                         if (client != null) {
-                            String toSend = "IAMAB0T[AI] " + USERNAME + ": " + part;
+                            String toSend = "IAMAB0T[AI] " + AI_NAME + ": " + part;
                             String preview = toSend.length() > 120 ? toSend.substring(0, 120) + "..." : toSend;
                             log("Queue chat send (len=" + toSend.length() + "): " + preview);
                             client.execute(() -> sendChat(toSend));
@@ -502,20 +567,40 @@ public class AutoSocialLogic {
         cmd.addAll(Arrays.asList(
                 "-f", "bestaudio/best",
                 "--no-playlist",
+                "--no-progress",
+                "-q",
                 "-x", "--audio-format", "mp3",
+                "--print", "AUTOSOCIALTITLE:%(title)s",
+                "--print", "after_move:AUTOSOCIALFILE:%(filepath)s",
                 "-o", outFile.getAbsolutePath(),
                 target
         ));
         log("Running yt-dlp (mp3) target='" + target + "' -> " + outFile.getAbsolutePath());
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(true);
+        pb.directory(TEMP_AUDIO_DIR);
         try {
             long start = System.currentTimeMillis();
+            log("yt-dlp working dir: " + TEMP_AUDIO_DIR.getAbsolutePath());
             Process p = pb.start();
+            final String[] titleHolder = new String[1];
+            final String[] producedPathHolder = new String[1];
             // stream output
             Thread reader = new Thread(() -> {
                 try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line; while ((line = r.readLine()) != null) { log("[yt-dlp] " + line); }
+                    String line; 
+                    while ((line = r.readLine()) != null) { 
+                        log("[yt-dlp] " + line); 
+                        String t = line.trim();
+                        if (t.startsWith("AUTOSOCIALTITLE:")) {
+                            titleHolder[0] = t.substring("AUTOSOCIALTITLE:".length()).trim();
+                        } else if (t.startsWith("AUTOSOCIALFILE:")) {
+                            String path = t.substring("AUTOSOCIALFILE:".length()).trim();
+                            File cand = new File(path);
+                            if (!cand.isAbsolute()) cand = new File(TEMP_AUDIO_DIR, path);
+                            if (cand.exists()) producedPathHolder[0] = cand.getAbsolutePath();
+                        }
+                    }
                 } catch (Exception e) { log("yt-dlp reader error: " + e); }
             }, "yt-dlp-reader");
             reader.setDaemon(true);
@@ -527,7 +612,21 @@ public class AutoSocialLogic {
                 log("yt-dlp timed out after " + dur + "ms");
                 return null;
             }
+            if (titleHolder[0] != null && !titleHolder[0].isBlank()) {
+                LAST_YT_TITLE = titleHolder[0];
+                log("Captured YouTube title: " + LAST_YT_TITLE);
+            }
             log("yt-dlp exit=" + p.exitValue() + ", time=" + dur + "ms");
+            // Prefer path printed by yt-dlp if available
+            if (producedPathHolder[0] != null) {
+                File printed = new File(producedPathHolder[0]);
+                if (printed.exists() && printed.length() > 0) {
+                    log("yt-dlp printed final path: " + printed.getAbsolutePath());
+                    return printed;
+                } else {
+                    log("yt-dlp printed path but file missing/empty: " + printed.getAbsolutePath());
+                }
+            }
             if (p.exitValue() == 0 && outFile.exists() && outFile.length() > 0) {
                 log("yt-dlp produced file (" + outFile.length() + " bytes)");
                 return outFile;
@@ -565,7 +664,14 @@ public class AutoSocialLogic {
                 log("Token {" + token + "}: attempting yt-dlp download as WAV");
                 File dl = downloadToWav(query);
                 if (dl != null) {
-                    playWav(dl);
+                    // Set current playing title for HUD while this track plays
+                    String prev = CURRENT_YT_TITLE;
+                    CURRENT_YT_TITLE = LAST_YT_TITLE;
+                    try {
+                        playWav(dl);
+                    } finally {
+                        CURRENT_YT_TITLE = prev; // restore previous (usually null) after playback completes
+                    }
                     return;
                 } else {
                     log("Token {" + token + "}: yt-dlp download failed.");
@@ -624,6 +730,8 @@ public class AutoSocialLogic {
 
     private static void playWav(File wav) {
         if (wav == null || !wav.exists()) return;
+        // Reset skip flag at the start of each playback to avoid carrying over from previous clip
+        SKIP_REQUESTED = false;
         log("Play WAV: " + wav.getAbsolutePath());
         Mixer mixer = findMixerByName(AUDIO_DEVICE_NAME);
         try (AudioInputStream aisOrig = AudioSystem.getAudioInputStream(wav)) {
@@ -734,21 +842,122 @@ public class AutoSocialLogic {
         }
         String target = isYouTubeUrl(queryOrUrl) ? normalizeShorts(queryOrUrl) : ("ytsearch1:" + queryOrUrl);
         TEMP_AUDIO_DIR.mkdirs();
-        File wav = new File(TEMP_AUDIO_DIR, Long.toString(System.nanoTime()) + ".wav");
+        // Use a base prefix and let yt-dlp decide extension; then locate the produced file.
+        String base = "yt_" + System.nanoTime();
+        File basePath = new File(TEMP_AUDIO_DIR, base);
+        String outputTemplate = basePath.getAbsolutePath() + ".%(ext)s";
         List<String> cmd = new ArrayList<>(YTDLP_CMD);
         cmd.addAll(Arrays.asList(
                 "-f", "bestaudio/best",
                 "--no-playlist",
+                "--no-progress",
+                "-q",
                 "-x",
                 "--audio-format", "wav",
-                "-o", wav.getAbsolutePath(),
+                "--print", "AUTOSOCIALTITLE:%(title)s",
+                "--print", "after_move:AUTOSOCIALFILE:%(filepath)s",
+                "-o", outputTemplate,
                 target
         ));
-        log("Running yt-dlp (wav) target='" + target + "' -> " + wav.getAbsolutePath());
-        boolean ok = runProcess(cmd, 240);
-        if (ok && wav.exists() && wav.length() > 0) {
-            log("yt-dlp WAV ready (" + wav.length() + " bytes)");
-            return wav;
+        log("Running yt-dlp (wav) target='" + target + "' -> template " + outputTemplate);
+        // Capture title by reading stdout; also writes the file(s)
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.redirectErrorStream(true);
+        pb.directory(TEMP_AUDIO_DIR);
+        try {
+            long start = System.currentTimeMillis();
+            log("yt-dlp working dir: " + TEMP_AUDIO_DIR.getAbsolutePath());
+            Process p = pb.start();
+            final String[] titleHolder = new String[1];
+            final String[] producedPathHolder = new String[1];
+            Thread reader = new Thread(() -> {
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line; while ((line = r.readLine()) != null) { 
+                        log("[yt-dlp] " + line); 
+                        String t = line.trim();
+                        if (t.startsWith("AUTOSOCIALTITLE:")) {
+                            titleHolder[0] = t.substring("AUTOSOCIALTITLE:".length()).trim();
+                        } else if (t.startsWith("AUTOSOCIALFILE:")) {
+                            String path = t.substring("AUTOSOCIALFILE:".length()).trim();
+                            File cand = new File(path);
+                            if (!cand.isAbsolute()) cand = new File(TEMP_AUDIO_DIR, path);
+                            if (cand.exists()) producedPathHolder[0] = cand.getAbsolutePath();
+                        }
+                    }
+                } catch (Exception e) { log("yt-dlp reader error: " + e); }
+            }, "yt-dlp-wav-reader");
+            reader.setDaemon(true);
+            reader.start();
+            boolean finished = p.waitFor(240, TimeUnit.SECONDS);
+            long dur = System.currentTimeMillis() - start;
+            if (!finished) { p.destroyForcibly(); log("yt-dlp timed out after " + dur + "ms"); return null; }
+            if (titleHolder[0] != null && !titleHolder[0].isBlank()) {
+                LAST_YT_TITLE = titleHolder[0];
+                log("Captured YouTube title: " + LAST_YT_TITLE);
+            }
+            log("yt-dlp exit=" + p.exitValue() + ", time=" + dur + "ms");
+
+            // Try exact expected file first
+            File expectedWav = new File(TEMP_AUDIO_DIR, base + ".wav");
+            if (expectedWav.exists() && expectedWav.length() > 0) {
+                log("Found expected WAV: " + expectedWav.getAbsolutePath() + " (" + expectedWav.length() + " bytes)");
+                return expectedWav;
+            }
+
+            // Discover the actual output file(s) created by yt-dlp for this base prefix
+            File[] produced = TEMP_AUDIO_DIR.listFiles(f -> f.isFile() && f.getName().startsWith(base + "."));
+            if (produced != null && produced.length > 0) {
+                // Pick the latest modified
+                File best = produced[0];
+                for (File f : produced) if (f.lastModified() > best.lastModified()) best = f;
+                String nameLower = best.getName().toLowerCase(Locale.ROOT);
+                log("yt-dlp produced file: " + best.getAbsolutePath() + " (" + best.length() + " bytes)");
+                if (nameLower.endsWith(".wav")) {
+                    return best;
+                } else if (FFMPEG_AVAILABLE) {
+                    // Transcode to wav if ffmpeg is available
+                    try {
+                        File outWav = new File(TEMP_AUDIO_DIR, base + "_conv.wav");
+                        List<String> ff = Arrays.asList("ffmpeg", "-y", "-i", best.getAbsolutePath(), outWav.getAbsolutePath());
+                        if (runProcess(ff, 120) && outWav.exists() && outWav.length() > 0) {
+                            log("Transcoded to WAV via ffmpeg: " + outWav.getAbsolutePath());
+                            return outWav;
+                        } else {
+                            log("ffmpeg transcode failed for: " + best.getName());
+                        }
+                    } catch (Exception e) {
+                        System.out.println("[AutoSocial] ffmpeg transcode exception: " + e);
+                    }
+                } else {
+                    log("Non-WAV file produced (" + best.getName() + ") and ffmpeg is not available. Provide ffmpeg or configure yt-dlp to output WAV.");
+                }
+            }
+
+            // As a robust fallback, scan for the newest WAV produced in TEMP_AUDIO_DIR since this download started
+            File[] wavs = TEMP_AUDIO_DIR.listFiles(f -> f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".wav") && f.lastModified() >= (start - 2000));
+            if (wavs != null && wavs.length > 0) {
+                File newest = wavs[0];
+                for (File f : wavs) if (f.lastModified() > newest.lastModified()) newest = f;
+                log("Fallback picked newest WAV since start: " + newest.getAbsolutePath() + " (" + newest.length() + " bytes)");
+                if (newest.exists() && newest.length() > 0) return newest;
+            }
+
+            // If mp3 was created instead (some setups ignore --audio-format), try to transcode if ffmpeg is present
+            File possibleMp3 = new File(TEMP_AUDIO_DIR, base + ".mp3");
+            if (possibleMp3.exists() && possibleMp3.length() > 0) {
+                if (FFMPEG_AVAILABLE) {
+                    File outWav = new File(TEMP_AUDIO_DIR, base + "_conv.wav");
+                    List<String> ff = Arrays.asList("ffmpeg", "-y", "-i", possibleMp3.getAbsolutePath(), outWav.getAbsolutePath());
+                    if (runProcess(ff, 120) && outWav.exists() && outWav.length() > 0) {
+                        log("Transcoded fallback MP3 to WAV: " + outWav.getAbsolutePath());
+                        return outWav;
+                    }
+                } else {
+                    log("MP3 produced but ffmpeg not available; cannot transcode to WAV.");
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("[AutoSocial] yt-dlp wav error: " + e);
         }
         log("yt-dlp WAV download failed or file missing.");
         return null;
