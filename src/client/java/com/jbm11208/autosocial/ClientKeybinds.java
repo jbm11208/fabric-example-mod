@@ -47,7 +47,7 @@ public class ClientKeybinds implements ClientModInitializer {
                     boolean ok = AutoSocialLogic.reloadConfig();
                     if (client.player != null) {
                         String name = AutoSocialLogic.getAiName();
-                        client.player.connection.sendChat("IAMAB0T[AI] " + name + ": config reload -> " + (ok ? "OK" : "FAILED") + ", model=" + AutoSocialLogic.getModelSafe());
+                        client.player.connection.sendChat("IAMAB0T[AI]: config reload -> " + (ok ? "OK" : "FAILED") + ", model=" + AutoSocialLogic.getModelSafe());
                     }
                 }
             }
