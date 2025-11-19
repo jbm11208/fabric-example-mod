@@ -71,6 +71,7 @@ public class AutoSocialConfigScreen extends Screen {
         this.addRenderableWidget(this.triggerField); y += 24;
 
         this.ytDlpPathField = new EditBox(this.font, xLeft, y, fieldW, fieldH, Component.literal("yt-dlp path"));
+        this.ytDlpPathField.setMaxLength(1000);
         this.ytDlpPathField.setValue(snap.ytDlpPath() == null ? "" : snap.ytDlpPath());
         this.addRenderableWidget(this.ytDlpPathField); y += 24;
 
@@ -130,7 +131,7 @@ public class AutoSocialConfigScreen extends Screen {
     private void onReload() {
         boolean ok = AutoSocialLogic.reloadConfig();
         if (Minecraft.getInstance().player != null) {
-            Minecraft.getInstance().player.connection.sendChat("IAMAB0T[AI] " + AutoSocialLogic.getAiName() + ": reload -> " + (ok ? "OK" : "FAILED") + ", model=" + AutoSocialLogic.getModelSafe());
+            Minecraft.getInstance().player.connection.sendChat("IAMAB0T[AI]: reload -> " + (ok ? "OK" : "FAILED") + ", model=" + AutoSocialLogic.getModelSafe());
         }
         this.onClose();
     }

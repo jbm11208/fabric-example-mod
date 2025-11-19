@@ -46,7 +46,6 @@ public class ClientKeybinds implements ClientModInitializer {
                     if (AutoSocialLogic.isVerbose()) System.out.println("[AutoSocial] Reload Config key pressed. Reloading config.yml...");
                     boolean ok = AutoSocialLogic.reloadConfig();
                     if (client.player != null) {
-                        String name = AutoSocialLogic.getAiName();
                         client.player.connection.sendChat("IAMAB0T[AI]: config reload -> " + (ok ? "OK" : "FAILED") + ", model=" + AutoSocialLogic.getModelSafe());
                     }
                 }
