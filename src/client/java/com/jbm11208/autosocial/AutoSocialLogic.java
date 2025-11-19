@@ -38,7 +38,6 @@ import java.util.regex.Pattern;
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
-import javax.sound.sampled.Clip;
 import javax.sound.sampled.DataLine;
 import javax.sound.sampled.FloatControl;
 import javax.sound.sampled.Line;
@@ -55,7 +54,10 @@ public class AutoSocialLogic {
     private static final File WARIO_SFX_DIR = resolveDir("AUTOSOCIAL_WARIO_DIR", new File(System.getProperty("user.home"), "Documents/AutoSocial/Wario"));
     private static final File TEMP_AUDIO_DIR = resolveDir("AUTOSOCIAL_TEMP_AUDIO_DIR", new File(System.getProperty("user.home"), "Documents/AutoSocial/TempAudio"));
     private static final String AUDIO_DEVICE_NAME = System.getenv().getOrDefault("AUTOSOCIAL_AUDIO_DEVICE", "CABLE Input (VB-Audio Virtual Cable)");
-    private static final float AUDIO_VOLUME = parseFloatEnv("AUTOSOCIAL_VOLUME", 0.2f);
+    // Audio volume (now configurable via the GUI)
+    private static volatile double AUDIO_VOLUME = parseDoubleEnv("AUTOSOCIAL_VOLUME", 0.2);
+    // public getter for other classes that need the current volume
+    public static double getAudioVolume() { return AUDIO_VOLUME; }
     // Ollama local endpoint. Ensure Ollama is running (default: http://localhost:11434).
     // You can override base URL via env var OLLAMA_BASE_URL or OLLAMA_HOST (e.g., http://127.0.0.1:11434).
     private static final String DEFAULT_OLLAMA_BASE = "http://localhost:11434";
@@ -71,13 +73,13 @@ public class AutoSocialLogic {
     // Token/context limits (configurable)
     private static final int NUM_PREDICT = parseIntEnv("AUTOSOCIAL_NUM_PREDICT", 1024);
     private static final int NUM_CTX = parseIntEnv("AUTOSOCIAL_NUM_CTX", 8192);
+    private static volatile double TEMPERATURE = parseDoubleEnv("AUTOSOCIAL_TEMPERATURE", 0.7);
     // External tool availability
     private static final boolean FFMPEG_AVAILABLE = detectFfmpeg();
     // yt-dlp is detected lazily to respect PATH changes without restarting the game
     private static volatile List<String> YTDLP_CMD = null;
     // Configurable yt-dlp executable path (can be overridden in config.yml). Empty means: probe PATH.
     private static volatile String YTDLP_PATH = "";
-    private static boolean isYtDlpAvailable() { return YTDLP_CMD != null; }
     private static synchronized boolean ensureYtDlp() {
         if (YTDLP_CMD == null) {
             YTDLP_CMD = detectYtDlp();
@@ -92,9 +94,76 @@ public class AutoSocialLogic {
 
     private static volatile String LAST_YT_TITLE = null;
     private static volatile String CURRENT_YT_TITLE = null;
-    public static String getLastDownloadedTitle() { return LAST_YT_TITLE; }
     public static String getCurrentPlayingTitle() { return CURRENT_YT_TITLE; }
     public static String getAiName() { return AI_NAME; }
+
+    // Snapshot for GUI/editing – added `volume` field
+    public record ConfigSnapshot(String model, String aiName, String trigger, String ytDlpPath,
+                                 double temperature, double volume, boolean verbose, String sysPrompt) {
+        public ConfigSnapshot(String model, String aiName, String trigger, String ytDlpPath,
+                              double temperature, double volume, boolean verbose, String sysPrompt) {
+            this.model = model;
+            this.aiName = aiName;
+            this.trigger = trigger;
+            this.ytDlpPath = ytDlpPath;
+            this.temperature = temperature;
+            this.volume = volume;
+            this.verbose = verbose;
+            this.sysPrompt = sysPrompt == null ? "" : sysPrompt;
+        }
+    }
+
+    public static ConfigSnapshot getConfigSnapshot() {
+        double temp = TEMPERATURE;
+        double vol = AUDIO_VOLUME;
+        boolean verb = VERBOSE;
+        String sys = SYS_PROMPT;
+        // Construct the snapshot with the new `volume` argument
+        return new ConfigSnapshot(MODEL, AI_NAME, TRIGGER, YTDLP_PATH, temp, vol, verb, sys);
+    }
+
+    public static boolean applyAndSaveConfig(ConfigSnapshot s) {
+        try {
+            // Update in-memory first
+            if (s.model() != null && !s.model().isBlank()) MODEL = s.model().trim();
+            if (s.aiName() != null && !s.aiName().isBlank()) AI_NAME = s.aiName().trim();
+            if (s.trigger() != null && !s.trigger().isBlank()) TRIGGER = s.trigger().trim();
+            YTDLP_PATH = s.ytDlpPath() == null ? "" : s.ytDlpPath().trim();
+            TEMPERATURE = s.temperature();
+            AUDIO_VOLUME = s.volume();          // <-- new line to update volume
+            VERBOSE = s.verbose();
+            if (s.sysPrompt() != null && !s.sysPrompt().isBlank()) SYS_PROMPT = s.sysPrompt();
+
+            // Persist to YAML file
+            if (!CONFIG_FILE.getParentFile().exists()) CONFIG_FILE.getParentFile().mkdirs();
+            String nl = System.lineSeparator();
+            StringBuilder sb = new StringBuilder();
+            sb.append("# AutoSocial configuration").append(nl);
+            sb.append("model: ").append(MODEL).append(nl);
+            sb.append("yt_dlp_path: ").append((YTDLP_PATH == null ? "" : YTDLP_PATH.replace("\\", "/"))).append(nl);
+            sb.append("ai_name: ").append(AI_NAME).append(nl);
+            sb.append("trigger: ").append(TRIGGER).append(nl);
+            sb.append("temperature: ").append(TEMPERATURE).append(nl);
+            sb.append("verbose: ").append(VERBOSE ? "true" : "false").append(nl);
+            sb.append("sys_prompt: |").append(nl);
+            for (String line : (SYS_PROMPT + "\n").split("\n")) {
+                sb.append("  ").append(line).append(nl);
+            }
+            try (OutputStream os = new FileOutputStream(CONFIG_FILE);
+                 Writer w = new OutputStreamWriter(os, StandardCharsets.UTF_8);
+                 BufferedWriter bw = new BufferedWriter(w)) {
+                bw.write(sb.toString());
+            }
+            clearYtDlpCache();
+            boolean y = ensureYtDlp();
+            log("Config saved via GUI. yt-dlp available=" + y + (y ? (" cmd='" + String.join(" ", YTDLP_CMD) + "'") : ""));
+            // Reload to normalize any parsing logic
+            return loadConfigInternal(true);
+        } catch (Exception e) {
+            System.out.println("[AutoSocial] Failed to save config via GUI: " + e);
+            return false;
+        }
+    }
 
     private static void log(String msg) {
         if (VERBOSE) System.out.println("[AutoSocial] " + msg);
@@ -105,6 +174,16 @@ public class AutoSocialLogic {
             String v = System.getenv(key);
             if (v == null || v.isBlank()) return def;
             return Integer.parseInt(v.trim());
+        } catch (Exception e) {
+            return def;
+        }
+    }
+
+    private static double parseDoubleEnv(String key, double def) {
+        try {
+            String v = System.getenv(key);
+            if (v == null || v.isBlank()) return def;
+            return Double.parseDouble(v.trim());
         } catch (Exception e) {
             return def;
         }
@@ -123,22 +202,21 @@ public class AutoSocialLogic {
     private static boolean detectFfmpeg() {
         try {
             List<String> cmd = Arrays.asList("ffmpeg", "-version");
-            boolean ok = runProcess(cmd, 5);
-            return ok;
+            return runProcess(cmd, 5);
         } catch (Exception e) {
             return false;
         }
     }
 
     private static List<String> detectYtDlp() {
-        // 1) Prefer configured path from config.yml if present and exists
+        // 1) Prefer a configured path from config.yml if present and exists
         try {
             String configured = YTDLP_PATH;
             if (configured != null && !configured.isBlank()) {
                 File f = new File(configured);
                 if (f.exists()) {
                     log("Using yt-dlp path from config.yml: " + f.getAbsolutePath());
-                    return Arrays.asList(f.getAbsolutePath());
+                    return List.of(f.getAbsolutePath());
                 } else {
                     log("Configured yt-dlp path does not exist: " + configured);
                 }
@@ -210,7 +288,6 @@ public class AutoSocialLogic {
             if (CONFIG_FILE.exists()) return;
             File parent = CONFIG_FILE.getParentFile();
             if (parent != null && !parent.exists()) parent.mkdirs();
-            String nl = System.lineSeparator();
             StringBuilder sb = new StringBuilder();
             sb.append("# AutoSocial configuration\n");
             sb.append("# Change the AI model and the system prompt without recompiling.\n");
@@ -219,6 +296,7 @@ public class AutoSocialLogic {
             sb.append("yt_dlp_path: ").append(YTDLP_PATH.replace("\\", "/")).append("\n");
             sb.append("ai_name: ").append(AI_NAME).append("\n");
             sb.append("trigger: ").append(TRIGGER).append("\n");
+            sb.append("temperature: ").append(TEMPERATURE).append("\n");
             sb.append("verbose: ").append(VERBOSE ? "true" : "false").append("\n");
             sb.append("sys_prompt: |\n");
             for (String line : (SYS_PROMPT + "\n").split("\n")) {
@@ -249,43 +327,44 @@ public class AutoSocialLogic {
             StringBuilder sysPrompt = null;
             boolean inSys = false;
             while ((line = br.readLine()) != null) {
-                String raw = line;
-                String trimmed = raw.trim();
+                String trimmed = line.trim();
                 if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                String trim = line.substring(line.indexOf(':') + 1).trim();
                 if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("model:")) {
-                    String v = raw.substring(raw.indexOf(':') + 1).trim();
-                    if (!v.isEmpty()) model = v;
+                    if (!trim.isEmpty()) model = trim;
                     continue;
                 }
                 if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("yt_dlp_path:")) {
-                    String v = raw.substring(raw.indexOf(':') + 1).trim();
-                    if (!v.isEmpty()) {
+                    if (!trim.isEmpty()) {
                         // Normalize backslashes
-                        YTDLP_PATH = v.replace("/", java.io.File.separator);
+                        YTDLP_PATH = trim.replace("/", java.io.File.separator);
                     }
                     continue;
                 }
                 if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("ai_name:")) {
-                    String v = raw.substring(raw.indexOf(':') + 1).trim();
-                    if (!v.isEmpty()) aiName = v;
+                    if (!trim.isEmpty()) aiName = trim;
                     continue;
                 }
                 if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("trigger:")) {
-                    String v = raw.substring(raw.indexOf(':') + 1).trim();
-                    if (!v.isEmpty()) trigger = v;
+                    if (!trim.isEmpty()) trigger = trim;
+                    continue;
+                }
+                if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("temperature:")) {
+                    try {
+                        if (!trim.isEmpty()) TEMPERATURE = Double.parseDouble(trim);
+                    } catch (Exception ignored) {}
                     continue;
                 }
                 if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("verbose:")) {
-                    String v = raw.substring(raw.indexOf(':') + 1).trim();
-                    if (!v.isEmpty()) verboseOpt = !(v.equalsIgnoreCase("false") || v.equalsIgnoreCase("0") || v.equalsIgnoreCase("no"));
+                    if (!trim.isEmpty()) verboseOpt = !(trim.equalsIgnoreCase("false") || trim.equalsIgnoreCase("0") || trim.equalsIgnoreCase("no"));
                     continue;
                 }
                 if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("sys_prompt:")) {
                     inSys = true;
                     sysPrompt = new StringBuilder();
                     // Support both single-line (after colon) and block style with |
-                    int idx = raw.indexOf(':');
-                    String after = idx >= 0 ? raw.substring(idx + 1).trim() : "";
+                    int idx = line.indexOf(':');
+                    String after = idx >= 0 ? line.substring(idx + 1).trim() : "";
                     if (!after.isEmpty() && !after.equals("|") && !after.equals(">")) {
                         sysPrompt.append(after);
                         inSys = false; // single-line
@@ -294,16 +373,16 @@ public class AutoSocialLogic {
                 }
                 if (inSys) {
                     // Stop if we hit a new top-level key (no indentation and contains ':')
-                    if (!raw.startsWith(" ") && trimmed.contains(":")) {
+                    if (!line.startsWith(" ") && trimmed.contains(":")) {
                         inSys = false;
                         // Fall through to parse this line again as a potential key
                         if (trimmed.toLowerCase(Locale.ROOT).startsWith("model:")) {
-                            String v = raw.substring(raw.indexOf(':') + 1).trim();
-                            if (!v.isEmpty()) model = v;
+                            String v = trim;
+                            if (!trim.isEmpty()) model = trim;
                         }
                         continue;
                     }
-                    String content = raw;
+                    String content = line;
                     if (content.startsWith("  ")) content = content.substring(2);
                     sysPrompt.append(content).append('\n');
                 }
@@ -317,11 +396,11 @@ public class AutoSocialLogic {
             if (trigger != null && !trigger.isBlank()) {
                 TRIGGER = trigger.trim();
             }
-            if (sysPrompt != null && sysPrompt.length() > 0) {
+            if (sysPrompt != null && !sysPrompt.isEmpty()) {
                 SYS_PROMPT = sysPrompt.toString().trim();
             }
             if (verboseOpt != null) {
-                VERBOSE = verboseOpt.booleanValue();
+                VERBOSE = verboseOpt;
             }
             if (verbose) log("Config loaded: model='" + MODEL + "', ai_name='" + AI_NAME + "', trigger='" + TRIGGER + "', verbose=" + VERBOSE + ", sys_prompt.len=" + (SYS_PROMPT == null ? 0 : SYS_PROMPT.length()));
             return true;
@@ -333,7 +412,7 @@ public class AutoSocialLogic {
 
     public static boolean reloadConfig() {
         boolean ok = loadConfigInternal(true);
-        // Re-detect yt-dlp using potentially updated path
+        // Re-detect yt-dlp using a potentially updated path
         clearYtDlpCache();
         boolean y = ensureYtDlp();
         log("After config reload: yt-dlp available=" + y + (y ? (" cmd='" + String.join(" ", YTDLP_CMD) + "'") : ""));
@@ -381,13 +460,13 @@ public class AutoSocialLogic {
                 memory.clear();
             }
             log("Memory cleared via command '" + clearCmd + "'.");
-            sendChat("IAMAB0T[AI] " + AI_NAME + " HAS BEEN cleared");
+            sendChat("IAMAB0T[AI] HAS BEEN KILLED!!!!!");
             return;
         }
         // Maintenance command: reloadconfig -> reload config.yml at runtime
         if (lower.contains("reloadconfig")) {
             boolean ok = reloadConfig();
-            sendChat("IAMAB0T[AI] " + AI_NAME + ": config reload -> " + (ok ? "OK" : "FAILED") + ", model=" + MODEL);
+            sendChat("IAMAB0T[AI]: config reload -> " + (ok ? "OK" : "FAILED") + ", model=" + MODEL);
             return;
         }
         // Maintenance command: reloadytdlp -> re-probe yt-dlp on PATH or via AUTOSOCIAL_YTDLP
@@ -425,13 +504,13 @@ public class AutoSocialLogic {
             try {
                 String response = generateResponse(content);
 
-                // Update memory log like the Python script (only if we got non-blank text)
+                // Update the memory log like the Python script (only if we got non-blank text)
                 if (response != null && !response.isBlank()) {
                     pushMemory("User Question: " + content);
                     pushMemory("Your Response: " + response);
                 }
 
-                // Parse response for audio tokens {..} and build segments for interleaved audio
+                // Parse response for audio tokens {.} and build segments for interleaved audio
                 ParsedResponse pr = parseCurlyTokens(response == null ? "" : response);
                 log("Parsed response: chatTextLen=" + pr.chatText.length() + ", tokens=" + pr.tokens.size());
                 if (!pr.tokens.isEmpty()) log("Tokens: " + pr.tokens);
@@ -443,12 +522,10 @@ public class AutoSocialLogic {
                     log("Sending " + parts.size() + " chat part(s).");
                     for (String part : parts) {
                         Minecraft client = Minecraft.getInstance();
-                        if (client != null) {
-                            String toSend = "IAMAB0T[AI] " + AI_NAME + ": " + part;
-                            String preview = toSend.length() > 120 ? toSend.substring(0, 120) + "..." : toSend;
-                            log("Queue chat send (len=" + toSend.length() + "): " + preview);
-                            client.execute(() -> sendChat(toSend));
-                        }
+                        String toSend = "IAMAB0T[AI] " + AI_NAME + ": " + part;
+                        String preview = toSend.length() > 120 ? toSend.substring(0, 120) + "..." : toSend;
+                        log("Queue chat send (len=" + toSend.length() + "): " + preview);
+                        client.execute(() -> sendChat(toSend));
                     }
                 } else {
                     log("No chat text to send (possibly tokens-only response).");
@@ -671,6 +748,19 @@ public class AutoSocialLogic {
                         playWav(dl);
                     } finally {
                         CURRENT_YT_TITLE = prev; // restore previous (usually null) after playback completes
+                        // Delete downloaded temp file when done playing
+                        try {
+                            if (dl.exists()) {
+                                // Only delete files within TEMP_AUDIO_DIR for safety
+                                File parent = dl.getParentFile();
+                                if (parent != null && parent.getAbsolutePath().equals(TEMP_AUDIO_DIR.getAbsolutePath())) {
+                                    boolean del = dl.delete();
+                                    log("Deleted temp audio file '" + dl.getName() + "' -> " + del);
+                                }
+                            }
+                        } catch (Exception e) {
+                            log("Failed to delete temp audio file: " + e);
+                        }
                     }
                     return;
                 } else {
@@ -758,7 +848,7 @@ public class AutoSocialLogic {
             // Volume control if supported
             try {
                 FloatControl vol = (FloatControl) line.getControl(FloatControl.Type.MASTER_GAIN);
-                float volLinear = Math.max(0.0001f, Math.min(1.0f, AUDIO_VOLUME));
+                double volLinear = Math.max(0.0001, Math.min(1.0, AUDIO_VOLUME));
                 float min = vol.getMinimum();
                 float max = vol.getMaximum();
                 // Convert linear 0..1 to dB range (approx)
@@ -1100,7 +1190,7 @@ public class AutoSocialLogic {
             body.add("messages", messages);
 
             JsonObject options = new JsonObject();
-            options.addProperty("temperature", 0.7);
+            options.addProperty("temperature", TEMPERATURE);
             options.addProperty("num_predict", NUM_PREDICT);
             options.addProperty("num_ctx", NUM_CTX);
             // Attempt to disable chain-of-thought/thinking in compatible models

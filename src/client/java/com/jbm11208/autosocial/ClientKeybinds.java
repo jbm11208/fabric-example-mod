@@ -7,8 +7,8 @@ import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
-import net.minecraft.client.gui.GuiGraphics;
 import org.lwjgl.glfw.GLFW;
+import com.jbm11208.autosocial.ui.AutoSocialConfigScreen;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -18,6 +18,7 @@ public class ClientKeybinds implements ClientModInitializer {
     private static KeyMapping skipKey;
     private static KeyMapping reloadConfigKey;
     private static KeyMapping toggleVideoHudKey;
+    private static KeyMapping openConfigKey;
     private static boolean SHOW_VIDEO_HUD = false;
 
     @Override
@@ -29,6 +30,8 @@ public class ClientKeybinds implements ClientModInitializer {
         reloadConfigKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.reload_config", GLFW.GLFW_KEY_UNKNOWN, "key.categories.misc"));
         // Register keybinding for toggling the Now Playing HUD
         toggleVideoHudKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.toggle_video_hud", GLFW.GLFW_KEY_UNKNOWN, "key.categories.misc"));
+        // Register keybinding for opening the AutoSocial config GUI
+        openConfigKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.open_config", GLFW.GLFW_KEY_UNKNOWN, "key.categories.misc"));
 
         // Listen for key presses each client tick
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
@@ -52,6 +55,12 @@ public class ClientKeybinds implements ClientModInitializer {
                 while (toggleVideoHudKey.consumeClick()) {
                     SHOW_VIDEO_HUD = !SHOW_VIDEO_HUD;
                     if (AutoSocialLogic.isVerbose()) System.out.println("[AutoSocial] Toggle Now Playing HUD -> " + (SHOW_VIDEO_HUD ? "ON" : "OFF"));
+                }
+            }
+            if (openConfigKey != null) {
+                while (openConfigKey.consumeClick()) {
+                    if (AutoSocialLogic.isVerbose()) System.out.println("[AutoSocial] Open Config GUI key pressed.");
+                    Minecraft.getInstance().setScreen(new AutoSocialConfigScreen(Minecraft.getInstance().screen));
                 }
             }
         });
