@@ -9,6 +9,7 @@ import net.minecraft.network.chat.Component;
 import net.fabricmc.loader.api.FabricLoader;
 import com.jbm11208.autosocial.tts.TTSClient;
 import com.jbm11208.autosocial.tts.Voice;
+import org.jetbrains.annotations.NotNull;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -25,14 +26,18 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -48,10 +53,28 @@ import javax.sound.sampled.SourceDataLine;
 import javax.sound.sampled.UnsupportedAudioFileException;
 
 public class AutoSocialLogic {
+    // AI Provider enum
+    public enum AIProvider {
+        OLLAMA("Ollama"),
+        OPENAI("OpenAI");
+
+        private final String displayName;
+
+        AIProvider(String displayName) {
+            this.displayName = displayName;
+        }
+
+        public String getDisplayName() {
+            return displayName;
+        }
+    }
+
     // Directories and audio config
     // Audio skip and current line tracking
     private static volatile javax.sound.sampled.SourceDataLine CURRENT_LINE = null;
     private static volatile boolean SKIP_REQUESTED = false;
+    // Track recently sent messages to prevent responding to our own messages
+    private static final Set<String> RECENT_SENT_MESSAGES = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     private static final File WARIO_SFX_DIR = resolveDir("AUTOSOCIAL_WARIO_DIR", new File(System.getProperty("user.home"), "Documents/AutoSocial/Wario"));
     private static final File TEMP_AUDIO_DIR = resolveDir("AUTOSOCIAL_TEMP_AUDIO_DIR", new File(System.getProperty("user.home"), "Documents/AutoSocial/TempAudio"));
@@ -71,6 +94,11 @@ public class AutoSocialLogic {
     // Verbose logging toggle (can be overridden in config.yml). Defaults to env AUTOSOCIAL_VERBOSE or true.
     private static volatile boolean VERBOSE = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_VERBOSE", "true"));
     private static volatile boolean TTS = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_TTS", "true"));
+    private static volatile Voice TTS_VOICE = Voice.Brian;
+    // AI Provider configuration
+    private static volatile AIProvider AI_PROVIDER = AIProvider.OLLAMA;
+    private static volatile String OPENAI_API_KEY = "";
+    private static final String OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
     // Disable "thinking"/reasoning output from compatible Ollama models (default: true). Set AUTOSOCIAL_DISABLE_THINKING=false to allow it.
     private static final boolean DISABLE_THINKING = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_DISABLE_THINKING", "true"));
     // Token/context limits (configurable)
@@ -95,17 +123,22 @@ public class AutoSocialLogic {
 
     public static boolean isVerbose() { return VERBOSE; }
     public static boolean isTTS() { return TTS; }
+    public static Voice getTTSVoice() { return TTS_VOICE; }
+    public static AIProvider getAIProvider() { return AI_PROVIDER; }
+    public static String getOpenAIKey() { return OPENAI_API_KEY; }
 
     private static volatile String LAST_YT_TITLE = null;
     private static volatile String CURRENT_YT_TITLE = null;
     public static String getCurrentPlayingTitle() { return CURRENT_YT_TITLE; }
     public static String getAiName() { return AI_NAME; }
 
-    // Snapshot for GUI/editing – added `volume` field
+    // Snapshot for GUI/editing – added `volume`, `voice`, `aiProvider`, and `openaiApiKey` fields
     public record ConfigSnapshot(String model, String aiName, String trigger, String ytDlpPath,
-                                 double temperature, double volume, boolean verbose, boolean tts, String sysPrompt) {
+                                 double temperature, double volume, boolean verbose, boolean tts, String sysPrompt, Voice voice,
+                                 AIProvider aiProvider, String openaiApiKey) {
         public ConfigSnapshot(String model, String aiName, String trigger, String ytDlpPath,
-                              double temperature, double volume, boolean verbose, boolean tts, String sysPrompt) {
+                              double temperature, double volume, boolean verbose, boolean tts, String sysPrompt, Voice voice,
+                              AIProvider aiProvider, String openaiApiKey) {
             this.model = model;
             this.aiName = aiName;
             this.trigger = trigger;
@@ -115,6 +148,9 @@ public class AutoSocialLogic {
             this.verbose = verbose;
             this.tts = tts;
             this.sysPrompt = sysPrompt == null ? "" : sysPrompt;
+            this.voice = voice == null ? Voice.Brian : voice;
+            this.aiProvider = aiProvider == null ? AIProvider.OLLAMA : aiProvider;
+            this.openaiApiKey = openaiApiKey == null ? "" : openaiApiKey;
         }
     }
 
@@ -124,8 +160,11 @@ public class AutoSocialLogic {
         boolean verb = VERBOSE;
         boolean tts = TTS;
         String sys = SYS_PROMPT;
-        // Construct the snapshot with the new `volume` argument
-        return new ConfigSnapshot(MODEL, AI_NAME, TRIGGER, YTDLP_PATH, temp, vol, verb, tts, sys);
+        Voice voice = TTS_VOICE;
+        AIProvider provider = AI_PROVIDER;
+        String apiKey = OPENAI_API_KEY;
+        // Construct the snapshot with the new `volume`, `voice`, `aiProvider`, and `openaiApiKey` arguments
+        return new ConfigSnapshot(MODEL, AI_NAME, TRIGGER, YTDLP_PATH, temp, vol, verb, tts, sys, voice, provider, apiKey);
     }
 
     public static boolean applyAndSaveConfig(ConfigSnapshot s) {
@@ -136,9 +175,12 @@ public class AutoSocialLogic {
             if (s.trigger() != null && !s.trigger().isBlank()) TRIGGER = s.trigger().trim();
             YTDLP_PATH = s.ytDlpPath() == null ? "" : s.ytDlpPath().trim();
             TEMPERATURE = s.temperature();
-            AUDIO_VOLUME = s.volume();          // <-- new line to update volume
+            AUDIO_VOLUME = s.volume();
             VERBOSE = s.verbose();
-            TTS = s.tts();                     // <-- persist TTS flag
+            TTS = s.tts();
+            if (s.voice() != null) TTS_VOICE = s.voice();
+            if (s.aiProvider() != null) AI_PROVIDER = s.aiProvider();
+            OPENAI_API_KEY = s.openaiApiKey() == null ? "" : s.openaiApiKey().trim();
             if (s.sysPrompt() != null && !s.sysPrompt().isBlank()) SYS_PROMPT = s.sysPrompt();
 
             // Persist to YAML file
@@ -153,6 +195,9 @@ public class AutoSocialLogic {
             sb.append("temperature: ").append(TEMPERATURE).append(nl);
             sb.append("verbose: ").append(VERBOSE ? "true" : "false").append(nl);
             sb.append("tts: ").append(TTS ? "true" : "false").append(nl);   // <-- write TTS option
+            sb.append("tts_voice: ").append(TTS_VOICE.name()).append(nl);   // <-- write TTS voice
+            sb.append("ai_provider: ").append(AI_PROVIDER.name()).append(nl);   // <-- write AI provider
+            sb.append("openai_api_key: ").append(OPENAI_API_KEY).append(nl);   // <-- write OpenAI API key
             sb.append("sys_prompt: |").append(nl);
             for (String line : (SYS_PROMPT + "\n").split("\n")) {
                 sb.append("  ").append(line).append(nl);
@@ -197,16 +242,6 @@ public class AutoSocialLogic {
         }
     }
 
-    private static float parseFloatEnv(String key, float def) {
-        try {
-            String v = System.getenv(key);
-            if (v == null || v.isBlank()) return def;
-            return Float.parseFloat(v.trim());
-        } catch (Exception e) {
-            return def;
-        }
-    }
-
     private static boolean detectFfmpeg() {
         try {
             List<String> cmd = Arrays.asList("ffmpeg", "-version");
@@ -217,7 +252,7 @@ public class AutoSocialLogic {
     }
 
     private static List<String> detectYtDlp() {
-        // 1) Prefer a configured path from config.yml if present and exists
+        // Prefer a configured path from config.yml if present and exists
         try {
             String configured = YTDLP_PATH;
             if (configured != null && !configured.isBlank()) {
@@ -232,7 +267,7 @@ public class AutoSocialLogic {
         } catch (Exception e) {
             log("Error reading configured yt-dlp path: " + e);
         }
-        // 2) Environment override
+        // Environment override
         try {
             String fromEnv = System.getenv("AUTOSOCIAL_YTDLP");
             if (fromEnv != null && !fromEnv.isBlank()) {
@@ -247,14 +282,14 @@ public class AutoSocialLogic {
         } catch (Exception e) {
             log("Error reading AUTOSOCIAL_YTDLP: " + e);
         }
-        // 3) Probe PATH for yt-dlp commands
+        // Probe PATH for yt-dlp commands
         String[] candidates = new String[] { "yt-dlp", "yt-dlp.exe" };
         for (String c : candidates) {
             try {
                 List<String> test = Arrays.asList(c, "--version");
                 if (runProcess(test, 5)) {
                     log("Found yt-dlp on PATH: " + c);
-                    return Arrays.asList(c);
+                    return List.of(c);
                 }
             } catch (Exception ignored) {}
         }
@@ -272,7 +307,7 @@ public class AutoSocialLogic {
     }
 
     private static final Random random = new Random();
-    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+    private static final ScheduledExecutorService EXECUTOR = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "AutoSocial-Worker");
         t.setDaemon(true);
         return t;
@@ -322,45 +357,140 @@ public class AutoSocialLogic {
     }
 
     private static boolean loadConfigInternal(boolean verbose) {
-        if (!CONFIG_FILE.exists()) {
-            // ... existing code ...
-        }
         try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(CONFIG_FILE), StandardCharsets.UTF_8))) {
             String line;
             String model = null;
             String aiName = null;
             String trigger = null;
+            String ytDlpPath = null;
+            Double temperature = null;
+            Double volume = null;
             Boolean verboseOpt = null;
-            Boolean ttsOpt = null;                     // <-- new variable for TTS
+            Boolean ttsOpt = null;
+            Voice voiceOpt = null;
+            AIProvider providerOpt = null;
+            String apiKeyOpt = null;
             StringBuilder sysPrompt = null;
             boolean inSys = false;
             while ((line = br.readLine()) != null) {
                 String trimmed = line.trim();
                 if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+
+                // Check if we're entering sys_prompt block
+                if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("sys_prompt:")) {
+                    inSys = true;
+                    sysPrompt = new StringBuilder();
+                    String rest = line.substring(line.indexOf(':') + 1).trim();
+                    if (!rest.isEmpty() && !rest.equals("|")) {
+                        sysPrompt.append(rest);
+                    }
+                    continue;
+                }
+
+                // If we're in sys_prompt block, collect indented lines
+                if (inSys) {
+                    if (line.startsWith("  ") || line.startsWith("\t")) {
+                        String content = line.replaceFirst("^\\s{2}", "");
+                        if (sysPrompt.length() > 0) sysPrompt.append("\n");
+                        sysPrompt.append(content);
+                    } else {
+                        // Non-indented line means we've exited sys_prompt block
+                        inSys = false;
+                    }
+                }
+
+                if (inSys) continue;
+
+                // Parse other fields
+                if (!line.contains(":")) continue;
                 String trim = line.substring(line.indexOf(':') + 1).trim();
-                // ... existing key handling ...
 
-                if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("verbose:")) {
-                    if (!trim.isEmpty())
-                        verboseOpt = !(trim.equalsIgnoreCase("false") || trim.equalsIgnoreCase("0") || trim.equalsIgnoreCase("no"));
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("model:")) {
+                    if (!trim.isEmpty()) model = trim;
                     continue;
                 }
-                if (!inSys && trimmed.toLowerCase(Locale.ROOT).startsWith("tts:")) { // <-- parse TTS option
-                    if (!trim.isEmpty())
-                        ttsOpt = !(trim.equalsIgnoreCase("false") || trim.equalsIgnoreCase("0") || trim.equalsIgnoreCase("no"));
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("ai_name:")) {
+                    if (!trim.isEmpty()) aiName = trim;
                     continue;
                 }
-                // ... existing parsing continues ...
-            }
-            // ... existing assignments ...
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("trigger:")) {
+                    if (!trim.isEmpty()) trigger = trim;
+                    continue;
+                }
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("yt_dlp_path:")) {
+                    ytDlpPath = trim;
+                    continue;
+                }
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("temperature:")) {
+                    if (!trim.isEmpty()) {
+                        try {
+                            temperature = Double.parseDouble(trim);
+                        } catch (NumberFormatException e) {
+                            log("Invalid temperature in config: " + trim);
+                        }
+                    }
+                    continue;
+                }
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("volume:")) {
+                    if (!trim.isEmpty()) {
+                        try {
+                            volume = Double.parseDouble(trim);
+                        } catch (NumberFormatException e) {
+                            log("Invalid volume in config: " + trim);
+                        }
+                    }
+                    continue;
+                }
 
-            if (verboseOpt != null) {
-                VERBOSE = verboseOpt;
+                boolean boolVal = !(trim.equalsIgnoreCase("false") || trim.equalsIgnoreCase("0") || trim.equalsIgnoreCase("no"));
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("verbose:")) {
+                    if (!trim.isEmpty()) verboseOpt = boolVal;
+                    continue;
+                }
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("tts:")) {
+                    if (!trim.isEmpty()) ttsOpt = boolVal;
+                    continue;
+                }
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("tts_voice:")) {
+                    if (!trim.isEmpty()) {
+                        try {
+                            voiceOpt = Voice.valueOf(trim);
+                        } catch (IllegalArgumentException e) {
+                            log("Invalid voice in config: " + trim + ", using default Brian");
+                        }
+                    }
+                    continue;
+                }
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("ai_provider:")) {
+                    if (!trim.isEmpty()) {
+                        try {
+                            providerOpt = AIProvider.valueOf(trim);
+                        } catch (IllegalArgumentException e) {
+                            log("Invalid AI provider in config: " + trim + ", using default OLLAMA");
+                        }
+                    }
+                    continue;
+                }
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("openai_api_key:")) {
+                    apiKeyOpt = trim;
+                    continue;
+                }
             }
-            if (ttsOpt != null) {                      // <-- apply parsed TTS value
-                TTS = ttsOpt;
-            }
-            // ... existing code ...
+
+            // Apply loaded values
+            if (model != null && !model.isBlank()) MODEL = model;
+            if (aiName != null && !aiName.isBlank()) AI_NAME = aiName;
+            if (trigger != null && !trigger.isBlank()) TRIGGER = trigger;
+            if (ytDlpPath != null) YTDLP_PATH = ytDlpPath;
+            if (temperature != null) TEMPERATURE = temperature;
+            if (volume != null) AUDIO_VOLUME = volume;
+            if (verboseOpt != null) VERBOSE = verboseOpt;
+            if (ttsOpt != null) TTS = ttsOpt;
+            if (voiceOpt != null) TTS_VOICE = voiceOpt;
+            if (providerOpt != null) AI_PROVIDER = providerOpt;
+            if (apiKeyOpt != null) OPENAI_API_KEY = apiKeyOpt;
+            if (sysPrompt != null && sysPrompt.length() > 0) SYS_PROMPT = sysPrompt.toString();
+
             return true;
         } catch (Exception e) {
             System.out.println("[AutoSocial] Failed to load config.yml: " + e);
@@ -408,7 +538,26 @@ public class AutoSocialLogic {
     public static void onChat(Component messageText) {
         String full = messageText.getString();
         log("Chat received: " + full);
-        if (full == null || full.isEmpty()) return;
+        if (full.isEmpty()) return;
+
+        // Check if this is a message we recently sent
+        if (RECENT_SENT_MESSAGES.contains(full)) {
+            log("Ignoring our own recently sent message.");
+            RECENT_SENT_MESSAGES.remove(full);
+            return;
+        }
+
+        // Ignore messages from ourselves that contain [AI] (our bot messages)
+        Minecraft client = Minecraft.getInstance();
+        if (client.player != null) {
+            String playerName = client.player.getName().getString();
+            // Check if message is from us and contains [AI]
+            if (full.contains(playerName) && full.contains("[AI]")) {
+                log("Ignoring our own bot message (from " + playerName + " containing [AI]).");
+                return;
+            }
+        }
+
         String lower = full.toLowerCase(Locale.ROOT);
 
         // Clear command: dynamic based on trigger word, still accept legacy 'clearwario'
@@ -441,9 +590,6 @@ public class AutoSocialLogic {
             return;
         }
 
-        // Ignore our own bot messages entirely to avoid loops or reacting to maintenance outputs
-        if (full.contains("IAMAB0T[AI]")) { return; }
-
         // Ignore additional triggers while we are already generating
         if (responding && lower.contains(TRIGGER.toLowerCase(Locale.ROOT))) { log("Currently responding; ignoring additional trigger."); return; }
 
@@ -461,8 +607,6 @@ public class AutoSocialLogic {
         EXECUTOR.submit(() -> {
             try {
                 String response = generateResponse(content);
-
-                // Update the memory log like the Python script (only if we got non-blank text)
                 if (response != null && !response.isBlank()) {
                     pushMemory("User Question: " + content);
                     pushMemory("Your Response: " + response);
@@ -476,23 +620,27 @@ public class AutoSocialLogic {
                 // Replace newlines then chunk into <=225 chars and send (only if there's text)
                 if (!pr.chatText.isBlank()) {
                     String flat = pr.chatText.replace('\n', ' ');
-                    List<String> parts = chunk(flat, 225);
+                    List<String> parts = chunk(flat);
                     log("Sending " + parts.size() + " chat part(s).");
                     for (String part : parts) {
-                        Minecraft client = Minecraft.getInstance();
+                        Minecraft mc = Minecraft.getInstance();
                         String toSend = "IAMAB0T[AI] " + AI_NAME + ": " + part;
                         String preview = toSend.length() > 120 ? toSend.substring(0, 120) + "..." : toSend;
                         log("Queue chat send (len=" + toSend.length() + "): " + preview);
-                        client.execute(() -> sendChat(toSend));
+                        mc.execute(() -> sendChat(toSend));
                     }
                 } else {
                     log("No chat text to send (possibly tokens-only response).");
                 }
 
                 // Interleaved audio behavior: play random Wario clips every 2-3 words in text, and handle {token}
-                if (isTTS()) {
+                boolean ttsEnabled = isTTS();
+                log("TTS enabled: " + ttsEnabled);
+                if (ttsEnabled) {
+                   log("Calling playTTSInterleaved with response length: " + (response == null ? 0 : response.length()));
                    playTTSInterleaved(response == null ? "" : response);
                 } else {
+                    log("Calling playAudioInterleaved (TTS disabled)");
                     playAudioInterleaved(response == null ? "" : response);
                 }
             } finally {
@@ -527,11 +675,11 @@ public class AutoSocialLogic {
         }
     }
 
-    private static List<String> chunk(String text, int maxLen) {
+    private static List<String> chunk(String text) {
         List<String> out = new ArrayList<>();
         int i = 0;
         while (i < text.length()) {
-            int end = Math.min(i + maxLen, text.length());
+            int end = Math.min(i + 225, text.length());
             if (end < text.length()) {
                 int lastSpace = text.lastIndexOf(' ', end);
                 if (lastSpace <= i) lastSpace = end;
@@ -562,7 +710,7 @@ public class AutoSocialLogic {
         Pattern p = Pattern.compile("\\{([^}]+)}");
         Matcher m = p.matcher(response);
         List<String> tokens = new ArrayList<>();
-        StringBuffer chat = new StringBuffer();
+        StringBuilder chat = new StringBuilder();
         while (m.find()) {
             tokens.add(m.group(1));
             m.appendReplacement(chat, "");
@@ -625,24 +773,7 @@ public class AutoSocialLogic {
             final String[] titleHolder = new String[1];
             final String[] producedPathHolder = new String[1];
             // stream output
-            Thread reader = new Thread(() -> {
-                try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line; 
-                    while ((line = r.readLine()) != null) { 
-                        log("[yt-dlp] " + line); 
-                        String t = line.trim();
-                        if (t.startsWith("AUTOSOCIALTITLE:")) {
-                            titleHolder[0] = t.substring("AUTOSOCIALTITLE:".length()).trim();
-                        } else if (t.startsWith("AUTOSOCIALFILE:")) {
-                            String path = t.substring("AUTOSOCIALFILE:".length()).trim();
-                            File cand = new File(path);
-                            if (!cand.isAbsolute()) cand = new File(TEMP_AUDIO_DIR, path);
-                            if (cand.exists()) producedPathHolder[0] = cand.getAbsolutePath();
-                        }
-                    }
-                } catch (Exception e) { log("yt-dlp reader error: " + e); }
-            }, "yt-dlp-reader");
-            reader.setDaemon(true);
+            Thread reader = getThread(p, titleHolder, producedPathHolder, "yt-dlp-reader");
             reader.start();
             boolean finished = p.waitFor(180, TimeUnit.SECONDS);
             long dur = System.currentTimeMillis() - start;
@@ -677,6 +808,30 @@ public class AutoSocialLogic {
             System.out.println("[AutoSocial] yt-dlp error: " + e);
             return null;
         }
+    }
+
+    private static @NotNull Thread getThread(Process p, String[] titleHolder, String[] producedPathHolder, String name) {
+        Thread reader = new Thread(() -> {
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    log("[yt-dlp] " + line);
+                    String t = line.trim();
+                    if (t.startsWith("AUTOSOCIALTITLE:")) {
+                        titleHolder[0] = t.substring("AUTOSOCIALTITLE:".length()).trim();
+                    } else if (t.startsWith("AUTOSOCIALFILE:")) {
+                        String path = t.substring("AUTOSOCIALFILE:".length()).trim();
+                        File cand = new File(path);
+                        if (!cand.isAbsolute()) cand = new File(TEMP_AUDIO_DIR, path);
+                        if (cand.exists()) producedPathHolder[0] = cand.getAbsolutePath();
+                    }
+                }
+            } catch (Exception e) {
+                log("yt-dlp reader error: " + e);
+            }
+        }, name);
+        reader.setDaemon(true);
+        return reader;
     }
 
     private static void handleAudioToken(String token) {
@@ -922,23 +1077,7 @@ public class AutoSocialLogic {
             Process p = pb.start();
             final String[] titleHolder = new String[1];
             final String[] producedPathHolder = new String[1];
-            Thread reader = new Thread(() -> {
-                try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line; while ((line = r.readLine()) != null) { 
-                        log("[yt-dlp] " + line); 
-                        String t = line.trim();
-                        if (t.startsWith("AUTOSOCIALTITLE:")) {
-                            titleHolder[0] = t.substring("AUTOSOCIALTITLE:".length()).trim();
-                        } else if (t.startsWith("AUTOSOCIALFILE:")) {
-                            String path = t.substring("AUTOSOCIALFILE:".length()).trim();
-                            File cand = new File(path);
-                            if (!cand.isAbsolute()) cand = new File(TEMP_AUDIO_DIR, path);
-                            if (cand.exists()) producedPathHolder[0] = cand.getAbsolutePath();
-                        }
-                    }
-                } catch (Exception e) { log("yt-dlp reader error: " + e); }
-            }, "yt-dlp-wav-reader");
-            reader.setDaemon(true);
+            Thread reader = getThread(p, titleHolder, producedPathHolder, "yt-dlp-wav-reader");
             reader.start();
             boolean finished = p.waitFor(240, TimeUnit.SECONDS);
             long dur = System.currentTimeMillis() - start;
@@ -1102,7 +1241,7 @@ public class AutoSocialLogic {
         }
     }
 
-    // --- helper to quickly verify WAV can be decoded by AudioSystem ----------
+    // helper to quickly verify WAV can be decoded by AudioSystem
     private static boolean isWavPlayable(File wavFile) {
         try (AudioInputStream ais = AudioSystem.getAudioInputStream(wavFile)) {
             AudioFormat fmt = ais.getFormat();
@@ -1115,77 +1254,97 @@ public class AutoSocialLogic {
         }
     }
 
-    // -----------------------------------------------------------------------
     private static void playTTSInterleaved(String response) {
-        // -----------------------------------------------------------------------
-        // 1️⃣ Extract plain‑text (everything outside of `{}`) and the token list.
-        //    The plain‑text will be spoken via TTS, the tokens will be handed to the
-        //    existing yt‑dlp pipeline after the speech finishes.
-        // -----------------------------------------------------------------------
-        ParsedResponse parsed = parseCurlyTokens(response);
-        String textOnly   = parsed.chatText;   // text to feed to TTS
-        List<String> tokens = parsed.tokens;   // e.g. ["Mario Kart Wii - Title Theme"]
+        log("[playTTSInterleaved] Starting with response: " + (response == null ? "null" : response.substring(0, Math.min(100, response.length()))));
 
-        // -----------------------------------------------------------------------
-        // 2️⃣ Play the *entire* TTS response (no splitting).  This mirrors the
-        //    original behaviour when no tokens were present.
-        // -----------------------------------------------------------------------
-        try {
-            TEMP_AUDIO_DIR.mkdirs();
-            byte[] audioData = TTSClient.requestTTS(textOnly, Voice.Brian);
-            if (audioData != null && audioData.length > 0) {
-                File wavFile = new File(TEMP_AUDIO_DIR, "tts_full.wav");
-                try (FileOutputStream fos = new FileOutputStream(wavFile)) {
-                    fos.write(audioData);
-                }
-
-                if (isWavPlayable(wavFile)) {
-                    log("[AutoSocial] Full TTS (text only) decoded as PCM WAV, playing directly.");
-                    playWav(wavFile);
-                } else {
-                    // Not a playable WAV → assume MP3, try ffmpeg conversion.
-                    File mp3File = new File(TEMP_AUDIO_DIR, "tts_full.mp3");
-                    try (FileOutputStream fos = new FileOutputStream(mp3File)) {
-                        fos.write(audioData);
-                    }
-
-                    if (FFMPEG_AVAILABLE) {
-                        File convWav = new File(TEMP_AUDIO_DIR, "tts_full_converted.wav");
-                        List<String> cmd = Arrays.asList(
-                                "ffmpeg", "-y",
-                                "-i", mp3File.getAbsolutePath(),
-                                convWav.getAbsolutePath()
-                        );
-                        log("[AutoSocial] Converting MP3 → WAV via ffmpeg: " + String.join(" ", cmd));
-                        if (runProcess(cmd, 120) && convWav.exists() && convWav.length() > 0) {
-                            playWav(convWav);
-                        } else {
-                            playWithSystem(mp3File);
-                        }
-                    } else {
-                        playWithSystem(mp3File);
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log("[AutoSocial] Full TTS error: " + e.getMessage());
+        if (response == null || response.isEmpty()) {
+            log("[playTTSInterleaved] Response is null or empty, nothing to play");
+            return;
         }
 
-        // -----------------------------------------------------------------------
-        // 3️⃣ After the speech finishes, play any `{}` tokens using yt‑dlp.
-        // -----------------------------------------------------------------------
-        if (!tokens.isEmpty()) {
-            if (ensureYtDlp()) {
-                for (String token : tokens) {
+        // Parse response into segments (TEXT and TOKEN) for interleaved playback
+        List<Segment> segments = parseSegments(response);
+        log("[playTTSInterleaved] Parsed " + segments.size() + " segments");
+
+        if (segments.isEmpty()) {
+            log("[playTTSInterleaved] No segments found, nothing to play");
+            return;
+        }
+
+        // Process each segment in order: TTS for text, audio tokens for {tokens}
+        int segmentIndex = 0;
+        for (Segment seg : segments) {
+            log("[playTTSInterleaved] Processing segment " + segmentIndex + " type=" + seg.type + " value=" +
+                (seg.value.length() > 50 ? seg.value.substring(0, 50) + "..." : seg.value));
+            if (seg.type == SegmentType.TEXT) {
+                // Generate and play TTS for this text segment
+                String textToSpeak = seg.value.trim();
+                log("[playTTSInterleaved] Text segment length after trim: " + textToSpeak.length());
+                if (!textToSpeak.isEmpty()) {
                     try {
-                        handleAudioToken(token);
+                        TEMP_AUDIO_DIR.mkdirs();
+                        log("[AutoSocial] Requesting TTS for segment " + segmentIndex + ": " +
+                            (textToSpeak.length() > 50 ? textToSpeak.substring(0, 50) + "..." : textToSpeak));
+                        log("[AutoSocial] Using TTS voice: " + TTS_VOICE.name());
+
+                        byte[] audioData = TTSClient.requestTTS(textToSpeak, TTS_VOICE);
+                        log("[AutoSocial] TTS response received: " + (audioData == null ? "null" : audioData.length + " bytes"));
+                        if (audioData != null && audioData.length > 0) {
+                            File wavFile = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + ".wav");
+                            try (FileOutputStream fos = new FileOutputStream(wavFile)) {
+                                fos.write(audioData);
+                            }
+
+                            if (isWavPlayable(wavFile)) {
+                                log("[AutoSocial] TTS segment " + segmentIndex + " decoded as PCM WAV, playing directly.");
+                                playWav(wavFile);
+                            } else {
+                                // Not a playable WAV → assume MP3, try ffmpeg conversion.
+                                File mp3File = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + ".mp3");
+                                try (FileOutputStream fos = new FileOutputStream(mp3File)) {
+                                    fos.write(audioData);
+                                }
+
+                                if (FFMPEG_AVAILABLE) {
+                                    File convWav = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + "_converted.wav");
+                                    List<String> cmd = Arrays.asList(
+                                            "ffmpeg", "-y",
+                                            "-i", mp3File.getAbsolutePath(),
+                                            convWav.getAbsolutePath()
+                                    );
+                                    log("[AutoSocial] Converting MP3 → WAV via ffmpeg: " + String.join(" ", cmd));
+                                    if (runProcess(cmd, 120) && convWav.exists() && convWav.length() > 0) {
+                                        playWav(convWav);
+                                    } else {
+                                        playWithSystem(mp3File);
+                                    }
+                                } else {
+                                    playWithSystem(mp3File);
+                                }
+                            }
+                        }
                     } catch (Exception e) {
-                        log("[AutoSocial] Error handling yt‑dlp token {" + token + "}: " + e);
+                        log("[AutoSocial] TTS segment " + segmentIndex + " error: " + e.getClass().getName() + ": " + e.getMessage());
+                        e.printStackTrace();
                     }
                 }
-            } else {
-                log("[AutoSocial] yt‑dlp not found – cannot play token(s): " + tokens);
+            } else if (seg.type == SegmentType.TOKEN) {
+                // Play audio token (yt-dlp or local file)
+                String token = seg.value.trim();
+                if (!token.isEmpty()) {
+                    log("[AutoSocial] Playing audio token at segment " + segmentIndex + ": {" + token + "}");
+                    if (ensureYtDlp()) {
+                        try {
+                            handleAudioToken(token);
+                        } catch (Exception e) {
+                            log("[AutoSocial] Error handling audio token {" + token + "}: " + e);
+                        }
+                    } else {
+                        log("[AutoSocial] yt-dlp not found – cannot play token: {" + token + "}");
+                    }
+                }
             }
+            segmentIndex++;
         }
     }
 
@@ -1220,6 +1379,15 @@ public class AutoSocialLogic {
         for (String m : memory) sys.append(m).append("\n");
         sys.append("\nRemember, keep your response to 3 sentences or less. Each sentence is a maximum of 20 words. DO NOT say Your Response: or User Question:.\n");
 
+        // Route to appropriate AI provider
+        if (AI_PROVIDER == AIProvider.OPENAI) {
+            return generateResponseOpenAI(userMessage, sys.toString());
+        } else {
+            return generateResponseOllama(userMessage, sys.toString());
+        }
+    }
+
+    private static String generateResponseOllama(String userMessage, String systemPrompt) {
         try {
             // Build Ollama chat payload (non-streaming)
             JsonObject body = new JsonObject();
@@ -1228,7 +1396,7 @@ public class AutoSocialLogic {
 
             JsonObject sysMsg = new JsonObject();
             sysMsg.addProperty("role", "system");
-            sysMsg.addProperty("content", sys.toString());
+            sysMsg.addProperty("content", systemPrompt);
             messages.add(sysMsg);
 
             JsonObject userMsg = new JsonObject();
@@ -1316,6 +1484,89 @@ public class AutoSocialLogic {
         }
     }
 
+    private static String generateResponseOpenAI(String userMessage, String systemPrompt) {
+        try {
+            if (OPENAI_API_KEY == null || OPENAI_API_KEY.isBlank()) {
+                log("OpenAI API key not configured. Please set it in the config.");
+                return fallbackResponse(userMessage);
+            }
+
+            // Build OpenAI chat payload
+            JsonObject body = new JsonObject();
+            body.addProperty("model", MODEL);
+            JsonArray messages = new JsonArray();
+
+            JsonObject sysMsg = new JsonObject();
+            sysMsg.addProperty("role", "system");
+            sysMsg.addProperty("content", systemPrompt);
+            messages.add(sysMsg);
+
+            JsonObject userMsg = new JsonObject();
+            userMsg.addProperty("role", "user");
+            userMsg.addProperty("content", userMessage);
+            messages.add(userMsg);
+
+            body.add("messages", messages);
+            body.addProperty("temperature", TEMPERATURE);
+            body.addProperty("max_tokens", NUM_PREDICT);
+
+            String json = body.toString();
+            log("OpenAI request: url=" + OPENAI_API_URL + ", model: " + MODEL + ", payloadBytes=" + json.getBytes(StandardCharsets.UTF_8).length);
+
+            long start = System.currentTimeMillis();
+            HttpURLConnection conn = (HttpURLConnection) URI.create(OPENAI_API_URL).toURL().openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Authorization", "Bearer " + OPENAI_API_KEY);
+            conn.setDoOutput(true);
+
+            try (OutputStreamWriter os = new OutputStreamWriter(conn.getOutputStream(), StandardCharsets.UTF_8)) {
+                os.write(json);
+            }
+
+            int code = conn.getResponseCode();
+            BufferedReader br = new BufferedReader(new InputStreamReader(code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream(), StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            String resp = sb.toString();
+            long dur = System.currentTimeMillis() - start;
+            log("OpenAI response: code=" + code + ", timeMs=" + dur + ", bytes=" + resp.getBytes(StandardCharsets.UTF_8).length);
+
+            if (code < 200 || code >= 300) {
+                System.out.println("[AutoSocial] OpenAI API error (" + code + "): " + resp);
+                return fallbackResponse(userMessage);
+            }
+
+            JsonObject root = JsonParser.parseString(resp).getAsJsonObject();
+            String out = null;
+
+            // Parse OpenAI response format
+            if (root.has("choices")) {
+                JsonArray choices = root.getAsJsonArray("choices");
+                if (choices.size() > 0) {
+                    JsonObject choice = choices.get(0).getAsJsonObject();
+                    if (choice.has("message")) {
+                        JsonObject msg = choice.getAsJsonObject("message");
+                        if (msg.has("content")) {
+                            out = msg.get("content").getAsString();
+                        }
+                    }
+                }
+            }
+
+            if (out == null) out = "";
+            log("OpenAI content length " + out.length());
+            if (out.isBlank()) {
+                log("OpenAI content empty. Raw body preview: " + (resp.length() > 200 ? resp.substring(0,200) + "..." : resp));
+            }
+            return out;
+        } catch (Exception e) {
+            System.out.println("[AutoSocial] Error generating response via OpenAI: " + e);
+            return fallbackResponse(userMessage);
+        }
+    }
+
     private static String fallbackResponse(String userMessage) {
         // Simple non-AI fallback so the mod works without an API key
         String[] quips = new String[] {
@@ -1329,7 +1580,11 @@ public class AutoSocialLogic {
 
     private static void sendChat(String msg) {
         Minecraft client = Minecraft.getInstance();
-        if (client == null || client.player == null || client.player.connection == null) return;
+        if (client.player == null) return;
+        // Add to recent sent messages to prevent responding to ourselves
+        RECENT_SENT_MESSAGES.add(msg);
+        // Clean up old messages after 5 seconds to prevent memory leak
+        EXECUTOR.schedule(() -> RECENT_SENT_MESSAGES.remove(msg), 5, java.util.concurrent.TimeUnit.SECONDS);
         client.player.connection.sendChat(msg);
     }
 }
