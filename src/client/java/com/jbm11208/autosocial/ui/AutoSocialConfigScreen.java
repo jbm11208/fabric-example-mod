@@ -3,6 +3,7 @@ package com.jbm11208.autosocial.ui;
 import com.jbm11208.autosocial.AutoSocialLogic;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.components.Checkbox;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.AbstractSliderButton;
@@ -11,7 +12,7 @@ import net.minecraft.network.chat.Component;
 
 public class AutoSocialConfigScreen extends Screen {
     private final Screen parent;
-
+    public boolean TTS;
     private EditBox modelField;
     private EditBox aiNameField;
     private EditBox triggerField;
@@ -20,6 +21,7 @@ public class AutoSocialConfigScreen extends Screen {
     private EditBox sysPromptField;
     private Checkbox verboseCheck;
     private VolumeSlider volumeSlider;
+    private Checkbox TTSon;
 
     private static class VolumeSlider extends AbstractSliderButton {
         public VolumeSlider(int x, int y, int width, int height, Component message, double initialValue) {
@@ -97,6 +99,12 @@ public class AutoSocialConfigScreen extends Screen {
                 .build();
         this.addRenderableWidget(this.verboseCheck); y += 28;
 
+        this.TTSon = Checkbox.builder(Component.literal("TTS"), this.font)
+                .pos(xLeft, y)
+                .selected(snap.tts())
+                .build();
+        this.addRenderableWidget(this.TTSon); y += 28;
+
         int btnW = 98;
         this.addRenderableWidget(Button.builder(Component.literal("Save"), b -> onSave())
                 .pos(xLeft, y)
@@ -120,10 +128,11 @@ public class AutoSocialConfigScreen extends Screen {
         boolean verbose = this.verboseCheck.selected();
         String sys = this.sysPromptField.getValue();
         double temp = 0.7;
+        boolean tts = this.TTSon.selected();
         try { temp = Double.parseDouble(this.temperatureField.getValue().trim()); } catch (Exception ignored) {}
         double vol = this.volumeSlider.getValue(); // public getter from concrete subclass
         AutoSocialLogic.ConfigSnapshot s = new AutoSocialLogic.ConfigSnapshot(
-                model, aiName, trigger, yt, temp, vol, verbose, sys);
+                model, aiName, trigger, yt, temp, vol, verbose, tts, sys);
         boolean ok = AutoSocialLogic.applyAndSaveConfig(s);
         this.onClose();
     }
@@ -135,6 +144,9 @@ public class AutoSocialConfigScreen extends Screen {
         }
         this.onClose();
     }
+    // private void onTTS() { TTS = true; }
+
+    // private void onRandomSounds() { TTS = false; }
 
     private void onCancel() { this.onClose(); }
 
