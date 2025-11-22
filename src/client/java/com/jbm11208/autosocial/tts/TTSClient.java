@@ -9,7 +9,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Small wrapper around StreamElements TTS endpoint.
+ * Small wrapper around a free TTS endpoint.
  *
  * Usage example:
  * <pre>
@@ -18,9 +18,6 @@ import java.nio.charset.StandardCharsets;
  * </pre>
  */
 public final class TTSClient {
-
-    /** Base URL used by the original Python script. */
-    private static final String BASE_URL = "https://api.streamelements.com/kappa/v2/speech";
 
     /** Shared HTTP client – thread‑safe and reusable. */
     private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
@@ -32,7 +29,7 @@ public final class TTSClient {
     }
 
     /**
-     * Queries the StreamElements TTS API and returns the raw audio bytes.
+     * Queries a free TTS service and returns the raw audio bytes.
      *
      * @param text  The text to synthesize.
      * @param voice Desired voice; if {@code null} the API defaults to “Brian”.
@@ -45,20 +42,22 @@ public final class TTSClient {
             throw new IllegalArgumentException("text must not be null");
         }
 
-        // Build query string – proper escaping of both parameters.
-        StringBuilder qs = new StringBuilder();
-        qs.append("voice=").append(URLEncoder.encode(
-                voice != null ? voice.getApiName() : Voice.Brian.getApiName(),
-                StandardCharsets.UTF_8));
-        qs.append('&');
-        qs.append("text=").append(URLEncoder.encode(text, StandardCharsets.UTF_8));
+        // Use a simple free TTS service - this one supports multiple voices including Geraint
+        String voiceParam = switch (voice) {
+            case Geraint, Brian, Amy, Emma, Justin -> voice.getApiName();
+            default ->
+                // Fallback to a standard voice if the specific one isn't supported
+                    "Geraint";
+        }; // Default fallback
+        // Map to voices supported by this service
 
-        URI uri = URI.create(BASE_URL + "?" + qs);
+        String url = "https://tts.cyzon.us/tts?text=" + URLEncoder.encode(text, StandardCharsets.UTF_8) + 
+                     "&voice=" + URLEncoder.encode(voiceParam, StandardCharsets.UTF_8);
 
         HttpRequest request = HttpRequest.newBuilder()
                 .GET()
-                .uri(uri)
-                .header("User-Agent", "AutoSocialMod/1.0")
+                .uri(URI.create(url))
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                 .build();
 
         HttpResponse<byte[]> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofByteArray());

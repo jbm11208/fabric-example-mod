@@ -94,7 +94,7 @@ public class AutoSocialLogic {
     // Verbose logging toggle (can be overridden in config.yml). Defaults to env AUTOSOCIAL_VERBOSE or true.
     private static volatile boolean VERBOSE = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_VERBOSE", "true"));
     private static volatile boolean TTS = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_TTS", "true"));
-    private static volatile Voice TTS_VOICE = Voice.Brian;
+    private static volatile Voice TTS_VOICE = Voice.Justin;
     // AI Provider configuration
     private static volatile AIProvider AI_PROVIDER = AIProvider.OLLAMA;
     private static volatile String OPENAI_API_KEY = "";
@@ -148,7 +148,7 @@ public class AutoSocialLogic {
             this.verbose = verbose;
             this.tts = tts;
             this.sysPrompt = sysPrompt == null ? "" : sysPrompt;
-            this.voice = voice == null ? Voice.Brian : voice;
+            this.voice = voice == null ? Voice.Justin : voice;
             this.aiProvider = aiProvider == null ? AIProvider.OLLAMA : aiProvider;
             this.openaiApiKey = openaiApiKey == null ? "" : openaiApiKey;
         }
