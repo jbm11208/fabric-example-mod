@@ -96,7 +96,7 @@ public class AutoSocialConfigScreen extends Screen {
 
         this.sysPromptField = new EditBox(this.font, xLeft, y, fieldW, fieldH,
                 Component.literal("Sys Prompt (single line)"));
-        this.sysPromptField.setMaxLength(10000);
+        this.sysPromptField.setMaxLength(1000000);
         this.sysPromptField.setValue(snap.sysPrompt().replace('\n', ' '));
         this.addRenderableWidget(this.sysPromptField); y += 24;
 
