@@ -2,7 +2,10 @@ package com.jbm11208.autosocial.ui;
 
 import com.jbm11208.autosocial.AutoSocialLogic;
 import com.jbm11208.autosocial.tts.Voice;
+import com.jbm11208.autosocial.tts.TTSClient.TTSProvider;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.components.Checkbox;
@@ -23,9 +26,11 @@ public class AutoSocialConfigScreen extends Screen {
     private Checkbox verboseCheck;
     private VolumeSlider volumeSlider;
     private Checkbox TTSon;
-    private CycleButton<Voice> voiceButton;
     private CycleButton<AutoSocialLogic.AIProvider> providerButton;
     private EditBox openaiApiKeyField;
+    private CycleButton<TTSProvider> ttsProviderButton;
+    private EditBox elevenlabsApiKeyField;
+    private EditBox elevenlabsVoiceIdField;
 
     private static class VolumeSlider extends AbstractSliderButton {
         public VolumeSlider(int x, int y, int width, int height, Component message, double initialValue) {
@@ -64,28 +69,28 @@ public class AutoSocialConfigScreen extends Screen {
         int fieldH = 20;
         AutoSocialLogic.ConfigSnapshot snap = AutoSocialLogic.getConfigSnapshot();
 
-        this.modelField = new EditBox(this.font, xLeft, y, fieldW, fieldH, Component.literal("Model"));
+        this.modelField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH, Component.literal("Model"), Component.literal("Model"));
         this.modelField.setValue(snap.model());
         this.modelField.setMaxLength(1000);
         this.addRenderableWidget(this.modelField); y += 24;
 
-        this.aiNameField = new EditBox(this.font, xLeft, y, fieldW, fieldH, Component.literal("AI Name"));
+        this.aiNameField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH, Component.literal("AI Name"), Component.literal("AI Name"));
         this.aiNameField.setValue(snap.aiName());
         this.aiNameField.setMaxLength(1000);
         this.addRenderableWidget(this.aiNameField); y += 24;
 
-        this.triggerField = new EditBox(this.font, xLeft, y, fieldW, fieldH, Component.literal("Trigger"));
+        this.triggerField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH, Component.literal("Trigger"), Component.literal("Trigger"));
         this.triggerField.setValue(snap.trigger());
         this.triggerField.setMaxLength(1000);
         this.addRenderableWidget(this.triggerField); y += 24;
 
-        this.ytDlpPathField = new EditBox(this.font, xLeft, y, fieldW, fieldH, Component.literal("yt-dlp path"));
+        this.ytDlpPathField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH, Component.literal("yt-dlp path"), Component.literal("yt-dlp path"));
         this.ytDlpPathField.setMaxLength(1000);
         this.ytDlpPathField.setValue(snap.ytDlpPath() == null ? "" : snap.ytDlpPath());
         this.addRenderableWidget(this.ytDlpPathField); y += 24;
 
-        this.temperatureField = new EditBox(this.font, xLeft, y, fieldW, fieldH,
-                Component.literal("Temperature (0-2)"));
+        this.temperatureField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH,
+                Component.literal("Temperature (0-2)"), Component.literal("Temperature (0-2)"));
         this.temperatureField.setValue(Double.toString(snap.temperature()));
         this.addRenderableWidget(this.temperatureField); y += 24;
 
@@ -94,8 +99,8 @@ public class AutoSocialConfigScreen extends Screen {
         this.volumeSlider.initMessage(); // initialise the label
         this.addRenderableWidget(this.volumeSlider); y += 28;
 
-        this.sysPromptField = new EditBox(this.font, xLeft, y, fieldW, fieldH,
-                Component.literal("Sys Prompt (single line)"));
+        this.sysPromptField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH,
+                Component.literal("Sys Prompt (single line)"), Component.literal("Sys Prompt (single line)"));
         this.sysPromptField.setMaxLength(1000000);
         this.sysPromptField.setValue(snap.sysPrompt().replace('\n', ' '));
         this.addRenderableWidget(this.sysPromptField); y += 24;
@@ -112,11 +117,23 @@ public class AutoSocialConfigScreen extends Screen {
                 .build();
         this.addRenderableWidget(this.TTSon); y += 28;
 
-        this.voiceButton = CycleButton.<Voice>builder(voice -> Component.literal("Voice: " + voice.name()))
-                .withValues(Voice.values())
-                .withInitialValue(snap.voice())
-                .create(xLeft, y, fieldW, fieldH, Component.literal("TTS Voice"));
-        this.addRenderableWidget(this.voiceButton); y += 28;
+        this.ttsProviderButton = CycleButton.<TTSProvider>builder(provider -> Component.literal("TTS Provider: " + provider.getDisplayName()))
+                .withValues(TTSProvider.values())
+                .withInitialValue(snap.ttsProvider())
+                .create(xLeft, y, fieldW, fieldH, Component.literal("TTS Provider"));
+        this.addRenderableWidget(this.ttsProviderButton); y += 28;
+
+        this.elevenlabsApiKeyField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH,
+                Component.literal("ElevenLabs API Key"), Component.literal("ElevenLabs API Key"));
+        this.elevenlabsApiKeyField.setMaxLength(1000);
+        this.elevenlabsApiKeyField.setValue(snap.elevenlabsApiKey() == null ? "" : snap.elevenlabsApiKey());
+        this.addRenderableWidget(this.elevenlabsApiKeyField); y += 24;
+
+        this.elevenlabsVoiceIdField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH,
+                Component.literal("ElevenLabs Voice ID"), Component.literal("ElevenLabs Voice ID"));
+        this.elevenlabsVoiceIdField.setMaxLength(200);
+        this.elevenlabsVoiceIdField.setValue(snap.elevenlabsVoiceId() == null ? "" : snap.elevenlabsVoiceId());
+        this.addRenderableWidget(this.elevenlabsVoiceIdField); y += 24;
 
         this.providerButton = CycleButton.<AutoSocialLogic.AIProvider>builder(provider -> Component.literal("AI Provider: " + provider.getDisplayName()))
                 .withValues(AutoSocialLogic.AIProvider.values())
@@ -124,7 +141,8 @@ public class AutoSocialConfigScreen extends Screen {
                 .create(xLeft, y, fieldW, fieldH, Component.literal("AI Provider"));
         this.addRenderableWidget(this.providerButton); y += 28;
 
-        this.openaiApiKeyField = new EditBox(this.font, xLeft, y, fieldW, fieldH, Component.literal("OpenAI API Key"));
+        this.openaiApiKeyField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH,
+                Component.literal("OpenAI API Key"), Component.literal("OpenAI API Key"));
         this.openaiApiKeyField.setMaxLength(1000);
         this.openaiApiKeyField.setValue(snap.openaiApiKey() == null ? "" : snap.openaiApiKey());
         this.addRenderableWidget(this.openaiApiKeyField); y += 24;
@@ -153,13 +171,16 @@ public class AutoSocialConfigScreen extends Screen {
         String sys = this.sysPromptField.getValue();
         double temp = 0.7;
         boolean tts = this.TTSon.selected();
-        Voice voice = this.voiceButton.getValue();
         AutoSocialLogic.AIProvider provider = this.providerButton.getValue();
         String apiKey = this.openaiApiKeyField.getValue().trim();
+        TTSProvider ttsProvider = this.ttsProviderButton.getValue();
+        String elevenlabsApiKey = this.elevenlabsApiKeyField.getValue().trim();
+        String elevenlabsVoiceId = this.elevenlabsVoiceIdField.getValue().trim();
         try { temp = Double.parseDouble(this.temperatureField.getValue().trim()); } catch (Exception ignored) {}
         double vol = this.volumeSlider.getValue(); // public getter from concrete subclass
         AutoSocialLogic.ConfigSnapshot s = new AutoSocialLogic.ConfigSnapshot(
-                model, aiName, trigger, yt, temp, vol, verbose, tts, sys, voice, provider, apiKey);
+                model, aiName, trigger, yt, temp, vol, verbose, tts, sys, provider, apiKey,
+                ttsProvider, elevenlabsApiKey, elevenlabsVoiceId);
         boolean ok = AutoSocialLogic.applyAndSaveConfig(s);
         this.onClose();
     }

@@ -2,7 +2,7 @@
 
     "schemaVersion": 1,
     "id": "autosocial",
-    "version": "2.0.1",
+    "version": "2.1.0",
     "name": "AutoSocial",
     "description": "A client-side automation mod built on Fabric.",
     "authors": ["jbm11208"],

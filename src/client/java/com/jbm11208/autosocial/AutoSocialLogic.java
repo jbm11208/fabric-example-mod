@@ -69,8 +69,6 @@ public class AutoSocialLogic {
         }
     }
 
-    // Directories and audio config
-    // Audio skip and current line tracking
     private static volatile javax.sound.sampled.SourceDataLine CURRENT_LINE = null;
     private static volatile boolean SKIP_REQUESTED = false;
     // Track recently sent messages to prevent responding to our own messages
@@ -79,7 +77,6 @@ public class AutoSocialLogic {
     private static final File WARIO_SFX_DIR = resolveDir("AUTOSOCIAL_WARIO_DIR", new File(System.getProperty("user.home"), "Documents/AutoSocial/Wario"));
     private static final File TEMP_AUDIO_DIR = resolveDir("AUTOSOCIAL_TEMP_AUDIO_DIR", new File(System.getProperty("user.home"), "Documents/AutoSocial/TempAudio"));
     private static final String AUDIO_DEVICE_NAME = System.getenv().getOrDefault("AUTOSOCIAL_AUDIO_DEVICE", "CABLE Input (VB-Audio Virtual Cable)");
-    // Audio volume (now configurable via the GUI)
     private static volatile double AUDIO_VOLUME = parseDoubleEnv("AUTOSOCIAL_VOLUME", 0.2);
     // public getter for other classes that need the current volume
     public static double getAudioVolume() { return AUDIO_VOLUME; }
@@ -87,14 +84,15 @@ public class AutoSocialLogic {
     // You can override base URL via env var OLLAMA_BASE_URL or OLLAMA_HOST (e.g., http://127.0.0.1:11434).
     private static final String DEFAULT_OLLAMA_BASE = "http://localhost:11434";
     private static final String API_URL = getOllamaBase() + "/api/chat";
-    // Model and sys prompt are loaded from config.yml at runtime (default shown).
     private static volatile String MODEL = "gpt-oss:20b-cloud";
     private static volatile String SYS_PROMPT = "You are Wario. You say WAAHHHH!! a lot. You love to swear. You can play any video you want by putting a phrase in curly brackets {}. only include the video title in curly brackets (Ex: {Mario Kart Wii - Title Theme}). You must specify a specific sound track and not just say the name of a game, as that normally does not play a song from that game. You are in a minecraft server owned by famous youtuber DougDoug, and some rando named MessyPrincy (AKA The Entity) buys peoples souls on the server in exchange for goods and services or something. DougDoug is bald, bad at 2d platformers, and evades taxes and stuff. Your nemesis is BeeGPT, who is annoyingly nice. You live in Big Homey, which is the same town BeeGPT lives in. BeeGPTs father, Cameron7108, is the \"mayor\" of Big Homey (he acts more like a dictator and refuses to hold elections). Currently, our mortal enemy is the town of DarthFarmers (AKA humblefarmers AKA the empire AKA republic) who live in a volcano and do unspeakable acts of evil (even by your standards). Currently, there are 3 big homey residents that broke the server rules and got permabanned: erderblade, dectahale, and kinghomer9. Player _Diney_ was banished from Big Homey for terrorizing the citizens (they are also leader of DarthFarmers). All the other towns talk about nuking the town of BumVille, so make sure to occasionally mention how you want to nuke BumVille. Keep your responses to 3 sentences or less. Here is your previous conversations, with User Question: being a question from a user, and Your Response: being what you responded to the question.";
-
+    // TTS Provider configuration
+    private static volatile TTSClient.TTSProvider TTS_PROVIDER = TTSClient.TTSProvider.CURRENT;
+    private static volatile String ELEVENLABS_API_KEY = "";
+    private static volatile String ELEVENLABS_VOICE_ID = "";
     // Verbose logging toggle (can be overridden in config.yml). Defaults to env AUTOSOCIAL_VERBOSE or true.
     private static volatile boolean VERBOSE = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_VERBOSE", "true"));
     private static volatile boolean TTS = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_TTS", "true"));
-    private static volatile Voice TTS_VOICE = Voice.Justin;
     // AI Provider configuration
     private static volatile AIProvider AI_PROVIDER = AIProvider.OLLAMA;
     private static volatile String OPENAI_API_KEY = "";
@@ -123,10 +121,11 @@ public class AutoSocialLogic {
 
     public static boolean isVerbose() { return VERBOSE; }
     public static boolean isTTS() { return TTS; }
-    public static Voice getTTSVoice() { return TTS_VOICE; }
     public static AIProvider getAIProvider() { return AI_PROVIDER; }
     public static String getOpenAIKey() { return OPENAI_API_KEY; }
-
+    public static TTSClient.TTSProvider getTTSProvider() { return TTS_PROVIDER; }
+    public static String getElevenlabsApiKey() { return ELEVENLABS_API_KEY; }
+    public static String getElevenlabsVoiceId() { return ELEVENLABS_VOICE_ID; }
     private static volatile String LAST_YT_TITLE = null;
     private static volatile String CURRENT_YT_TITLE = null;
     public static String getCurrentPlayingTitle() { return CURRENT_YT_TITLE; }
@@ -134,11 +133,13 @@ public class AutoSocialLogic {
 
     // Snapshot for GUI/editing – added `volume`, `voice`, `aiProvider`, and `openaiApiKey` fields
     public record ConfigSnapshot(String model, String aiName, String trigger, String ytDlpPath,
-                                 double temperature, double volume, boolean verbose, boolean tts, String sysPrompt, Voice voice,
-                                 AIProvider aiProvider, String openaiApiKey) {
+                                 double temperature, double volume, boolean verbose, boolean tts, String sysPrompt,
+                                 AIProvider aiProvider, String openaiApiKey, TTSClient.TTSProvider ttsProvider,
+                                 String elevenlabsApiKey, String elevenlabsVoiceId) {
         public ConfigSnapshot(String model, String aiName, String trigger, String ytDlpPath,
-                              double temperature, double volume, boolean verbose, boolean tts, String sysPrompt, Voice voice,
-                              AIProvider aiProvider, String openaiApiKey) {
+                              double temperature, double volume, boolean verbose, boolean tts, String sysPrompt,
+                              AIProvider aiProvider, String openaiApiKey, TTSClient.TTSProvider ttsProvider,
+                              String elevenlabsApiKey, String elevenlabsVoiceId) {
             this.model = model;
             this.aiName = aiName;
             this.trigger = trigger;
@@ -148,23 +149,18 @@ public class AutoSocialLogic {
             this.verbose = verbose;
             this.tts = tts;
             this.sysPrompt = sysPrompt == null ? "" : sysPrompt;
-            this.voice = voice == null ? Voice.Justin : voice;
             this.aiProvider = aiProvider == null ? AIProvider.OLLAMA : aiProvider;
             this.openaiApiKey = openaiApiKey == null ? "" : openaiApiKey;
+            this.ttsProvider = ttsProvider;
+            this.elevenlabsApiKey = elevenlabsApiKey;
+            this.elevenlabsVoiceId = elevenlabsVoiceId;
         }
     }
 
     public static ConfigSnapshot getConfigSnapshot() {
-        double temp = TEMPERATURE;
-        double vol = AUDIO_VOLUME;
-        boolean verb = VERBOSE;
-        boolean tts = TTS;
-        String sys = SYS_PROMPT;
-        Voice voice = TTS_VOICE;
-        AIProvider provider = AI_PROVIDER;
-        String apiKey = OPENAI_API_KEY;
         // Construct the snapshot with the new `volume`, `voice`, `aiProvider`, and `openaiApiKey` arguments
-        return new ConfigSnapshot(MODEL, AI_NAME, TRIGGER, YTDLP_PATH, temp, vol, verb, tts, sys, voice, provider, apiKey);
+        return new ConfigSnapshot(MODEL, AI_NAME, TRIGGER, YTDLP_PATH, TEMPERATURE, AUDIO_VOLUME, VERBOSE, TTS, SYS_PROMPT,
+                AI_PROVIDER, OPENAI_API_KEY, TTS_PROVIDER, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID);
     }
 
     public static boolean applyAndSaveConfig(ConfigSnapshot s) {
@@ -178,10 +174,12 @@ public class AutoSocialLogic {
             AUDIO_VOLUME = s.volume();
             VERBOSE = s.verbose();
             TTS = s.tts();
-            if (s.voice() != null) TTS_VOICE = s.voice();
             if (s.aiProvider() != null) AI_PROVIDER = s.aiProvider();
             OPENAI_API_KEY = s.openaiApiKey() == null ? "" : s.openaiApiKey().trim();
             if (s.sysPrompt() != null && !s.sysPrompt().isBlank()) SYS_PROMPT = s.sysPrompt();
+            TTS_PROVIDER = s.ttsProvider();
+            ELEVENLABS_API_KEY = s.elevenlabsApiKey();
+            ELEVENLABS_VOICE_ID = s.elevenlabsVoiceId();
 
             // Persist to YAML file
             if (!CONFIG_FILE.getParentFile().exists()) CONFIG_FILE.getParentFile().mkdirs();
@@ -195,9 +193,11 @@ public class AutoSocialLogic {
             sb.append("temperature: ").append(TEMPERATURE).append(nl);
             sb.append("verbose: ").append(VERBOSE ? "true" : "false").append(nl);
             sb.append("tts: ").append(TTS ? "true" : "false").append(nl);   // <-- write TTS option
-            sb.append("tts_voice: ").append(TTS_VOICE.name()).append(nl);   // <-- write TTS voice
             sb.append("ai_provider: ").append(AI_PROVIDER.name()).append(nl);   // <-- write AI provider
             sb.append("openai_api_key: ").append(OPENAI_API_KEY).append(nl);   // <-- write OpenAI API key
+            sb.append("tts_provider: ").append(TTS_PROVIDER).append(nl);
+            sb.append("elevenlabs_api_key: ").append(ELEVENLABS_API_KEY).append(nl);
+            sb.append("elevenlabs_voice_id: ").append(ELEVENLABS_VOICE_ID).append(nl);
             sb.append("sys_prompt: |").append(nl);
             for (String line : (SYS_PROMPT + "\n").split("\n")) {
                 sb.append("  ").append(line).append(nl);
@@ -371,6 +371,9 @@ public class AutoSocialLogic {
             AIProvider providerOpt = null;
             String apiKeyOpt = null;
             StringBuilder sysPrompt = null;
+            String elevenlabsVoiceId = null;
+            String elevenlabsApiKey = null;
+            String ttsProvider = null;
             boolean inSys = false;
             while ((line = br.readLine()) != null) {
                 String trimmed = line.trim();
@@ -415,6 +418,18 @@ public class AutoSocialLogic {
                 }
                 if (trimmed.toLowerCase(Locale.ROOT).startsWith("trigger:")) {
                     if (!trim.isEmpty()) trigger = trim;
+                    continue;
+                }
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("elevenlabs_api_key:")) {
+                    if (!trim.isEmpty()) elevenlabsApiKey = trim;
+                    continue;
+                }
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("elevenlabs_voice_id:")) {
+                    if (!trim.isEmpty()) elevenlabsVoiceId = trim;
+                    continue;
+                }
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("tts_provider:")) {
+                    if (!trim.isEmpty()) ttsProvider = trim;
                     continue;
                 }
                 if (trimmed.toLowerCase(Locale.ROOT).startsWith("yt_dlp_path:")) {
@@ -486,10 +501,12 @@ public class AutoSocialLogic {
             if (volume != null) AUDIO_VOLUME = volume;
             if (verboseOpt != null) VERBOSE = verboseOpt;
             if (ttsOpt != null) TTS = ttsOpt;
-            if (voiceOpt != null) TTS_VOICE = voiceOpt;
             if (providerOpt != null) AI_PROVIDER = providerOpt;
             if (apiKeyOpt != null) OPENAI_API_KEY = apiKeyOpt;
-            if (sysPrompt != null && sysPrompt.length() > 0) SYS_PROMPT = sysPrompt.toString();
+            if (sysPrompt != null && !sysPrompt.isEmpty()) SYS_PROMPT = sysPrompt.toString();
+            if (elevenlabsApiKey != null && !elevenlabsApiKey.isBlank()) ELEVENLABS_API_KEY = elevenlabsApiKey;
+            if (elevenlabsVoiceId != null && !elevenlabsVoiceId.isBlank()) ELEVENLABS_VOICE_ID = elevenlabsVoiceId;
+            if (ttsProvider != null && !ttsProvider.isBlank()) TTS_PROVIDER = TTSClient.TTSProvider.valueOf(ttsProvider);
 
             return true;
         } catch (Exception e) {
@@ -1275,7 +1292,7 @@ public class AutoSocialLogic {
         int segmentIndex = 0;
         for (Segment seg : segments) {
             log("[playTTSInterleaved] Processing segment " + segmentIndex + " type=" + seg.type + " value=" +
-                (seg.value.length() > 50 ? seg.value.substring(0, 50) + "..." : seg.value));
+                    (seg.value.length() > 50 ? seg.value.substring(0, 50) + "..." : seg.value));
             if (seg.type == SegmentType.TEXT) {
                 // Generate and play TTS for this text segment
                 String textToSpeak = seg.value.trim();
@@ -1284,69 +1301,74 @@ public class AutoSocialLogic {
                     try {
                         TEMP_AUDIO_DIR.mkdirs();
                         log("[AutoSocial] Requesting TTS for segment " + segmentIndex + ": " +
-                            (textToSpeak.length() > 50 ? textToSpeak.substring(0, 50) + "..." : textToSpeak));
-                        log("[AutoSocial] Using TTS voice: " + TTS_VOICE.name());
-
-                        byte[] audioData = TTSClient.requestTTS(textToSpeak, TTS_VOICE);
-                        log("[AutoSocial] TTS response received: " + (audioData == null ? "null" : audioData.length + " bytes"));
-                        if (audioData != null && audioData.length > 0) {
-                            File wavFile = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + ".wav");
-                            try (FileOutputStream fos = new FileOutputStream(wavFile)) {
-                                fos.write(audioData);
-                            }
-
-                            if (isWavPlayable(wavFile)) {
-                                log("[AutoSocial] TTS segment " + segmentIndex + " decoded as PCM WAV, playing directly.");
-                                playWav(wavFile);
-                            } else {
-                                // Not a playable WAV → assume MP3, try ffmpeg conversion.
-                                File mp3File = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + ".mp3");
-                                try (FileOutputStream fos = new FileOutputStream(mp3File)) {
-                                    fos.write(audioData);
+                                (textToSpeak.length() > 50 ? textToSpeak.substring(0, 50) + "..." : textToSpeak));
+                            byte[] audioData = TTSClient.requestTTS(textToSpeak, TTS_PROVIDER, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID);
+                            log("[AutoSocial] TTS response received: " + (audioData == null ? "null" : audioData.length + " bytes"));
+                            if (audioData != null && audioData.length > 0) {
+                                File wavFile = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + ".wav");
+                                if (TTS_PROVIDER != TTSClient.TTSProvider.ELEVENLABS) {
+                                    try (FileOutputStream fos = new FileOutputStream(wavFile)) {
+                                        fos.write(audioData);
+                                    }
+                                } else if (TTS_PROVIDER == TTSClient.TTSProvider.ELEVENLABS) {
+                                    // ElevenLabs returns MP3, convert to WAV
+                                    try (FileOutputStream fos = new FileOutputStream(wavFile)) {
+                                        fos.write(audioData);
+                                    }
                                 }
+                                if (isWavPlayable(wavFile)) {
+                                    log("[AutoSocial] TTS segment " + segmentIndex + " decoded as PCM WAV, playing directly.");
+                                    playWav(wavFile);
+                                } else {
+                                    // Not a playable WAV → assume MP3, try ffmpeg conversion.
+                                    File mp3File = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + ".mp3");
+                                    try (FileOutputStream fos = new FileOutputStream(mp3File)) {
+                                        fos.write(audioData);
+                                    }
 
-                                if (FFMPEG_AVAILABLE) {
-                                    File convWav = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + "_converted.wav");
-                                    List<String> cmd = Arrays.asList(
-                                            "ffmpeg", "-y",
-                                            "-i", mp3File.getAbsolutePath(),
-                                            convWav.getAbsolutePath()
-                                    );
-                                    log("[AutoSocial] Converting MP3 → WAV via ffmpeg: " + String.join(" ", cmd));
-                                    if (runProcess(cmd, 120) && convWav.exists() && convWav.length() > 0) {
-                                        playWav(convWav);
+                                    if (FFMPEG_AVAILABLE) {
+                                        File convWav = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + "_converted.wav");
+                                        List<String> cmd = Arrays.asList(
+                                                "ffmpeg", "-y",
+                                                "-i", mp3File.getAbsolutePath(),
+                                                convWav.getAbsolutePath()
+                                        );
+                                        log("[AutoSocial] Converting MP3 → WAV via ffmpeg: " + String.join(" ", cmd));
+                                        if (runProcess(cmd, 120) && convWav.exists() && convWav.length() > 0) {
+                                            playWav(convWav);
+                                        } else {
+                                            playWithSystem(mp3File);
+                                        }
                                     } else {
                                         playWithSystem(mp3File);
                                     }
-                                } else {
-                                    playWithSystem(mp3File);
                                 }
                             }
-                        }
-                    } catch (Exception e) {
-                        log("[AutoSocial] TTS segment " + segmentIndex + " error: " + e.getClass().getName() + ": " + e.getMessage());
-                        e.printStackTrace();
-                    }
-                }
-            } else if (seg.type == SegmentType.TOKEN) {
-                // Play audio token (yt-dlp or local file)
-                String token = seg.value.trim();
-                if (!token.isEmpty()) {
-                    log("[AutoSocial] Playing audio token at segment " + segmentIndex + ": {" + token + "}");
-                    if (ensureYtDlp()) {
-                        try {
-                            handleAudioToken(token);
+
                         } catch (Exception e) {
-                            log("[AutoSocial] Error handling audio token {" + token + "}: " + e);
+                            log("[AutoSocial] TTS segment " + segmentIndex + " error: " + e.getClass().getName() + ": " + e.getMessage());
+                            e.printStackTrace();
                         }
-                    } else {
-                        log("[AutoSocial] yt-dlp not found – cannot play token: {" + token + "}");
+                    }
+                } else if (seg.type == SegmentType.TOKEN) {
+                    // Play audio token (yt-dlp or local file)
+                    String token = seg.value.trim();
+                    if (!token.isEmpty()) {
+                        log("[AutoSocial] Playing audio token at segment " + segmentIndex + ": {" + token + "}");
+                        if (ensureYtDlp()) {
+                            try {
+                                handleAudioToken(token);
+                            } catch (Exception e) {
+                                log("[AutoSocial] Error handling audio token {" + token + "}: " + e);
+                            }
+                        } else {
+                            log("[AutoSocial] yt-dlp not found – cannot play token: {" + token + "}");
+                        }
                     }
                 }
+                segmentIndex++;
             }
-            segmentIndex++;
         }
-    }
 
     private static boolean runProcess(List<String> cmd, int timeoutSec) {
         try {
