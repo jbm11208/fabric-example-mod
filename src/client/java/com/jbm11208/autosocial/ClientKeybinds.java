@@ -3,10 +3,14 @@ package com.jbm11208.autosocial;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
-import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
-import net.minecraft.client.KeyMapping;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement;
+import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.resources.ResourceLocation;
 import org.lwjgl.glfw.GLFW;
 import com.jbm11208.autosocial.ui.AutoSocialConfigScreen;
 
@@ -24,14 +28,44 @@ public class ClientKeybinds implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         if (AutoSocialLogic.isVerbose()) System.out.println("[AutoSocial] ClientKeybinds initializing...");
+
         // Register keybinding for skipping current audio; appears in Controls -> Key Binds
-        skipKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.skip", GLFW.GLFW_KEY_UNKNOWN, "key.categories.misc"));
+        skipKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.skip"));
         // Register keybinding for reloading config
-        reloadConfigKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.reload_config", GLFW.GLFW_KEY_UNKNOWN, "key.categories.misc"));
+        reloadConfigKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.reload_config"));
         // Register keybinding for toggling the Now Playing HUD
-        toggleVideoHudKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.toggle_video_hud", GLFW.GLFW_KEY_UNKNOWN, "key.categories.misc"));
+        toggleVideoHudKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.toggle_video_hud"));
         // Register keybinding for opening the AutoSocial config GUI
-        openConfigKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.open_config", GLFW.GLFW_KEY_UNKNOWN, "key.categories.misc"));
+        openConfigKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.open_config"));
+
+        // Create HUD element for showing current playing YouTube title
+        ResourceLocation hudId = ResourceLocation.fromNamespaceAndPath("autosocial", "now_playing_hud");
+
+        HudElement element = (GuiGraphics drawContext, DeltaTracker tickDelta) -> {
+            if (!SHOW_VIDEO_HUD) return;
+
+            String title = AutoSocialLogic.getCurrentPlayingTitle();
+            if (title == null || title.isBlank()) return;
+
+            Minecraft mc = Minecraft.getInstance();
+            Font font = mc.font;
+
+            String text = "Now Playing: " + title;
+            int sw = mc.getWindow().getGuiScaledWidth();
+            int sh = mc.getWindow().getGuiScaledHeight();
+            int tw = font.width(text);
+            int th = font.lineHeight;
+
+            int x = Math.max(0, (sw - tw) / 2);
+            int y = Math.max(0, (sh - th) / 2);
+
+            int pad = 6;
+            drawContext.fill(x - pad, y - pad, x + tw + pad, y + th + pad, 0xAA000000);
+            drawContext.drawString(font, text, x, y, 0xFFFFFFFF, false);
+        };
+
+        // Register the HUD element
+        HudElementRegistry.addLast(hudId, element);
 
         // Listen for key presses each client tick
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
@@ -63,44 +97,31 @@ public class ClientKeybinds implements ClientModInitializer {
                 }
             }
         });
-
-        // HUD overlay to show current playing YouTube title via yt-dlp when toggled on
-        HudRenderCallback.EVENT.register((drawContext, deltaTracker) -> {
-            if (!SHOW_VIDEO_HUD) return;
-            String title = AutoSocialLogic.getCurrentPlayingTitle();
-            if (title == null || title.isBlank()) return;
-            Minecraft mc = Minecraft.getInstance();
-            Font font = mc.font;
-            String text = "Now Playing: " + title;
-            int sw = mc.getWindow().getGuiScaledWidth();
-            int sh = mc.getWindow().getGuiScaledHeight();
-            int tw = font.width(text);
-            int th = font.lineHeight;
-            int x = Math.max(0, (sw - tw) / 2);
-            int y = Math.max(0, (sh - th) / 2);
-            // Background box
-            int pad = 6;
-            drawContext.fill(x - pad, y - pad, x + tw + pad, y + th + pad, 0xAA000000);
-            // Text
-            drawContext.drawString(font, text, x, y, 0xFFFFFFFF, false);
-        });
     }
 
-    private static KeyMapping createKeyMapping(String translationKey, int defaultKey, String categoryKey) {
+    private static KeyMapping createKeyMapping(String translationKey) {
         try {
-            // Prefer Mojang-style constructor: (String, int, String)
-            Constructor<KeyMapping> mojangCtor = KeyMapping.class.getConstructor(String.class, int.class, String.class);
-            return mojangCtor.newInstance(translationKey, defaultKey, categoryKey);
-        } catch (NoSuchMethodException mojangMissing) {
+            // Try the modern constructor first (String, int, String)
+            Constructor<KeyMapping> modernCtor = KeyMapping.class.getConstructor(String.class, int.class, String.class);
+            return modernCtor.newInstance(translationKey, GLFW.GLFW_KEY_UNKNOWN, "key.categories.misc");
+        } catch (NoSuchMethodException modernMissing) {
             try {
-                // Fallback to enum Category signature: (String, int, KeyMapping.Category)
-                Class<?> categoryClass = Class.forName("net.minecraft.client.KeyMapping$Category");
-                Field miscField = categoryClass.getField("MISC");
-                Object misc = miscField.get(null);
-                Constructor<KeyMapping> yarnCtor = KeyMapping.class.getConstructor(String.class, int.class, categoryClass);
-                return yarnCtor.newInstance(translationKey, defaultKey, misc);
+                // Fallback to category-based constructor
+                Constructor<KeyMapping> mojangCtor = KeyMapping.class.getConstructor(String.class, int.class, KeyMapping.Category.class);
+                return mojangCtor.newInstance(translationKey, GLFW.GLFW_KEY_UNKNOWN, KeyMapping.Category.MISC);
+            } catch (NoSuchMethodException mojangMissing) {
+                try {
+                    // Fallback to enum Category signature: (String, int, KeyMapping.Category)
+                    Class<?> categoryClass = Class.forName("net.minecraft.client.KeyMapping$Category");
+                    Field miscField = categoryClass.getField("MISC");
+                    Object misc = miscField.get(null);
+                    Constructor<KeyMapping> yarnCtor = KeyMapping.class.getConstructor(String.class, int.class, categoryClass);
+                    return yarnCtor.newInstance(translationKey, GLFW.GLFW_KEY_UNKNOWN, misc);
+                } catch (Throwable t) {
+                    throw new RuntimeException("Failed to construct KeyMapping with any known signature", t);
+                }
             } catch (Throwable t) {
-                throw new RuntimeException("Failed to construct KeyMapping with either signature", t);
+                throw new RuntimeException("Failed to construct KeyMapping", t);
             }
         } catch (Throwable t) {
             throw new RuntimeException("Failed to construct KeyMapping", t);

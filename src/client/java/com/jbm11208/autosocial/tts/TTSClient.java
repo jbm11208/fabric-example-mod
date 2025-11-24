@@ -9,17 +9,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Small wrapper around a free TTS endpoint.
- *
- * Usage example:
- * <pre>
- *     byte[] wav = TTSClient.requestTTS("Hello world!", Voice.Brian);
- *     // write the bytes to a file, feed to a SourceDataLine, etc.
- * </pre>
- */
-/**
  * Small wrapper around TTS services.
- *
  * Usage example:
  * <pre>
  *     byte[] wav = TTSClient.requestTTS("Hello world!", Voice.Brian, TTSProvider.CURRENT, null, null);

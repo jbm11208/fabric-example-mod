@@ -8,7 +8,6 @@ import net.minecraft.network.chat.Component;
 public class LabeledEditBox extends EditBox {
     private final Component label;
     private final Font myFont;
-    private final int labelColor = 0xFFE0E0E0; // Slightly grayish white for better visibility
 
     public LabeledEditBox(Font font, int x, int y, int width, int height,
                           Component label, Component placeholder) {
@@ -41,6 +40,8 @@ public class LabeledEditBox extends EditBox {
         // System.out.println("Label: " + label.getString() + " at (" + textX + ", " + textY + ")");
 
         // Draw the label with better color and shadow for visibility
+        // Slightly grayish white for better visibility
+        int labelColor = 0xFFE0E0E0;
         guiGraphics.drawString(
                 myFont,
                 label,

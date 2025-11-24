@@ -1,11 +1,8 @@
 package com.jbm11208.autosocial.ui;
 
 import com.jbm11208.autosocial.AutoSocialLogic;
-import com.jbm11208.autosocial.tts.Voice;
 import com.jbm11208.autosocial.tts.TTSClient.TTSProvider;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.Font;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.components.Checkbox;
@@ -16,7 +13,6 @@ import net.minecraft.network.chat.Component;
 
 public class AutoSocialConfigScreen extends Screen {
     private final Screen parent;
-    public boolean TTS;
     private EditBox modelField;
     private EditBox aiNameField;
     private EditBox triggerField;
@@ -96,7 +92,7 @@ public class AutoSocialConfigScreen extends Screen {
 
         this.volumeSlider = new VolumeSlider(xLeft, y, fieldW, fieldH,
                 Component.literal("Volume: "), snap.volume());
-        this.volumeSlider.initMessage(); // initialise the label
+        this.volumeSlider.initMessage(); // initialize the label
         this.addRenderableWidget(this.volumeSlider); y += 28;
 
         this.sysPromptField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH,
@@ -181,7 +177,7 @@ public class AutoSocialConfigScreen extends Screen {
         AutoSocialLogic.ConfigSnapshot s = new AutoSocialLogic.ConfigSnapshot(
                 model, aiName, trigger, yt, temp, vol, verbose, tts, sys, provider, apiKey,
                 ttsProvider, elevenlabsApiKey, elevenlabsVoiceId);
-        boolean ok = AutoSocialLogic.applyAndSaveConfig(s);
+        AutoSocialLogic.applyAndSaveConfig(s);
         this.onClose();
     }
 
@@ -192,9 +188,6 @@ public class AutoSocialConfigScreen extends Screen {
         }
         this.onClose();
     }
-    // private void onTTS() { TTS = true; }
-
-    // private void onRandomSounds() { TTS = false; }
 
     private void onCancel() { this.onClose(); }
 
