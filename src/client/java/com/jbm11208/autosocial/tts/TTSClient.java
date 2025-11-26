@@ -18,7 +18,9 @@ import java.nio.charset.StandardCharsets;
  */
 public final class TTSClient {
 
-    /** Shared HTTP client – thread‑safe and reusable. */
+    /**
+     * Shared HTTP client – thread‑safe and reusable.
+     */
     private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
@@ -45,16 +47,16 @@ public final class TTSClient {
     /**
      * Queries a TTS service and returns the raw audio bytes.
      *
-     * @param text  The text to synthesize.
-     * @param provider The TTS provider to use.
-     * @param elevenlabsApiKey ElevenLabs API key (required if provider is ELEVENLABS).
+     * @param text              The text to synthesize.
+     * @param provider          The TTS provider to use.
+     * @param elevenlabsApiKey  ElevenLabs API key (required if provider is ELEVENLABS).
      * @param elevenlabsVoiceId ElevenLabs voice ID (required if provider is ELEVENLABS).
      * @return Audio data as a byte array (typically a WAV file).
      * @throws IOException          on network/IO errors.
      * @throws InterruptedException if the request is interrupted.
      */
     public static byte[] requestTTS(String text, TTSProvider provider,
-                                   String elevenlabsApiKey, String elevenlabsVoiceId)
+                                    String elevenlabsApiKey, String elevenlabsVoiceId)
             throws IOException, InterruptedException {
         if (text == null) {
             throw new IllegalArgumentException("text must not be null");
@@ -69,7 +71,7 @@ public final class TTSClient {
     /**
      * Queries the current free TTS service and returns the raw audio bytes.
      *
-     * @param text  The text to synthesize.
+     * @param text The text to synthesize.
      * @return Audio data as a byte array (typically a WAV file).
      * @throws IOException          on network/IO errors.
      * @throws InterruptedException if the request is interrupted.
@@ -97,8 +99,8 @@ public final class TTSClient {
     /**
      * Queries ElevenLabs TTS service and returns the raw audio bytes.
      *
-     * @param text  The text to synthesize.
-     * @param apiKey ElevenLabs API key.
+     * @param text    The text to synthesize.
+     * @param apiKey  ElevenLabs API key.
      * @param voiceId ElevenLabs voice ID (overrides voice enum if provided).
      * @return Audio data as a byte array (MP3 format).
      * @throws IOException          on network/IO errors.

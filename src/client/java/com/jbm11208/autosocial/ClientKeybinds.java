@@ -39,7 +39,7 @@ public class ClientKeybinds implements ClientModInitializer {
         openConfigKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.open_config"));
 
         // Create HUD element for showing current playing YouTube title
-        ResourceLocation hudId = ResourceLocation.fromNamespaceAndPath("autosocial", "now_playing_hud");
+        ResourceLocation hudId = ResourceLocation.fromNamespaceAndPath("assets.autosocial", "now_playing_hud");
 
         HudElement element = (GuiGraphics drawContext, DeltaTracker tickDelta) -> {
             if (!SHOW_VIDEO_HUD) return;
@@ -71,13 +71,15 @@ public class ClientKeybinds implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (skipKey != null) {
                 while (skipKey.consumeClick()) {
-                    if (AutoSocialLogic.isVerbose()) System.out.println("[AutoSocial] Skip key pressed. Requesting audio skip...");
+                    if (AutoSocialLogic.isVerbose())
+                        System.out.println("[AutoSocial] Skip key pressed. Requesting audio skip...");
                     AutoSocialLogic.skipCurrentAudio();
                 }
             }
             if (reloadConfigKey != null) {
                 while (reloadConfigKey.consumeClick()) {
-                    if (AutoSocialLogic.isVerbose()) System.out.println("[AutoSocial] Reload Config key pressed. Reloading config.yml...");
+                    if (AutoSocialLogic.isVerbose())
+                        System.out.println("[AutoSocial] Reload Config key pressed. Reloading config.yml...");
                     boolean ok = AutoSocialLogic.reloadConfig();
                     if (client.player != null) {
                         client.player.connection.sendChat("IAMAB0T[AI]: config reload -> " + (ok ? "OK" : "FAILED") + ", model=" + AutoSocialLogic.getModelSafe());
@@ -87,7 +89,8 @@ public class ClientKeybinds implements ClientModInitializer {
             if (toggleVideoHudKey != null) {
                 while (toggleVideoHudKey.consumeClick()) {
                     SHOW_VIDEO_HUD = !SHOW_VIDEO_HUD;
-                    if (AutoSocialLogic.isVerbose()) System.out.println("[AutoSocial] Toggle Now Playing HUD -> " + (SHOW_VIDEO_HUD ? "ON" : "OFF"));
+                    if (AutoSocialLogic.isVerbose())
+                        System.out.println("[AutoSocial] Toggle Now Playing HUD -> " + (SHOW_VIDEO_HUD ? "ON" : "OFF"));
                 }
             }
             if (openConfigKey != null) {

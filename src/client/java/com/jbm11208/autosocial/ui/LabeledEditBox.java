@@ -20,7 +20,6 @@ public class LabeledEditBox extends EditBox {
     public void renderWidget(GuiGraphics guiGraphics, int mouseX, int mouseY, float delta) {
         // Draw the base EditBox first
         super.renderWidget(guiGraphics, mouseX, mouseY, delta);
-
         if (myFont == null || label == null)
             return;
 
@@ -31,15 +30,11 @@ public class LabeledEditBox extends EditBox {
         int labelWidth = myFont.width(label);
 
         // Position label to the left of the edit box
-        int textX = this.getX() - labelWidth - 10; // Increased spacing to 10 pixels
+        int textX = this.getX() - labelWidth - 10;
 
         // Ensure the label doesn't go off the left edge of the screen
-        textX = Math.max(textX, 4); // Increased minimum spacing from left edge
+        textX = Math.max(textX, 4);
 
-        // Debug: Print position info (remove after testing)
-        // System.out.println("Label: " + label.getString() + " at (" + textX + ", " + textY + ")");
-
-        // Draw the label with better color and shadow for visibility
         // Slightly grayish white for better visibility
         int labelColor = 0xFFE0E0E0;
         guiGraphics.drawString(

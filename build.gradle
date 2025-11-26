@@ -14,6 +14,8 @@ repositories {
 	maven {
 		url = 'https://maven.fabricmc.net/'
 	}
+    maven { url "https://maven.shedaniel.me/" }
+    maven { url "https://maven.terraformersmc.com/releases/" }
 	mavenCentral()
 }
 
@@ -21,8 +23,7 @@ loom {
 	splitEnvironmentSourceSets()
 
 	mods {
-		"modid" {
-			sourceSet sourceSets.main
+		"autosocial" {
 			sourceSet sourceSets.client
 		}
 	}
@@ -34,10 +35,9 @@ dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	mappings loom.officialMojangMappings()
 	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
-    modImplementation "net.fabricmc.fabric-api:fabric-key-binding-api-v1:${project.fabric_version}"
-	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-
+    modApi "com.terraformersmc:modmenu:15.0.0"
+    modApi "me.shedaniel.cloth:cloth-config-fabric:19.0.147"
 }
 
 processResources {

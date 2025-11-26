@@ -7,6 +7,7 @@ import com.google.gson.JsonParser;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import net.fabricmc.loader.api.FabricLoader;
+import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import com.jbm11208.autosocial.tts.TTSClient;
 import org.jetbrains.annotations.NotNull;
 
@@ -52,6 +53,8 @@ import javax.sound.sampled.SourceDataLine;
 import javax.sound.sampled.UnsupportedAudioFileException;
 
 public class AutoSocialLogic {
+
+
     // AI Provider enum
     public enum AIProvider {
         OLLAMA("Ollama"),
@@ -77,60 +80,91 @@ public class AutoSocialLogic {
     private static final File TEMP_AUDIO_DIR = resolveDir("AUTOSOCIAL_TEMP_AUDIO_DIR", new File(System.getProperty("user.home"), "Documents/AutoSocial/TempAudio"));
     private static final String AUDIO_DEVICE_NAME = System.getenv().getOrDefault("AUTOSOCIAL_AUDIO_DEVICE", "CABLE Input (VB-Audio Virtual Cable)");
     private static volatile double AUDIO_VOLUME = parseDoubleEnv("AUTOSOCIAL_VOLUME", 0.2);
+
+    // TTS-related configuration
+    private static volatile TTSClient.TTSProvider TTS_PROVIDER = TTSClient.TTSProvider.CURRENT;
+    private static volatile String ELEVENLABS_API_KEY = "";
+    private static volatile String ELEVENLABS_VOICE_ID = "";
+    private static volatile boolean BOT_PREFIX = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_BOT_PREFIX", "true"));
+    private static volatile boolean TTS = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_TTS", "true"));
+
+    // Verbose logging toggle (can be overridden in config.yml). Defaults to env AUTOSOCIAL_VERBOSE or true.
+    private static volatile boolean VERBOSE = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_VERBOSE", "true"));
+
+    // AI-related configuration
+    private static volatile AIProvider AI_PROVIDER = AIProvider.OLLAMA;
+    private static volatile String OPENAI_API_KEY = "";
+    private static final String OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+    private static final boolean DISABLE_THINKING = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_DISABLE_THINKING", "true"));
     // Ollama local endpoint. Ensure Ollama is running (default: http://localhost:11434).
     // You can override base URL via env var OLLAMA_BASE_URL or OLLAMA_HOST (e.g., http://127.0.0.1:11434).
     private static final String DEFAULT_OLLAMA_BASE = "http://localhost:11434";
     private static final String API_URL = getOllamaBase() + "/api/chat";
     private static volatile String MODEL = "gpt-oss:20b-cloud";
     private static volatile String SYS_PROMPT = "You are Wario. You say WAAHHHH!! a lot. You love to swear. You can play any video you want by putting a phrase in curly brackets {}. only include the video title in curly brackets (Ex: {Mario Kart Wii - Title Theme}). You must specify a specific sound track and not just say the name of a game, as that normally does not play a song from that game. You are in a minecraft server owned by famous youtuber DougDoug, and some rando named MessyPrincy (AKA The Entity) buys peoples souls on the server in exchange for goods and services or something. DougDoug is bald, bad at 2d platformers, and evades taxes and stuff. Your nemesis is BeeGPT, who is annoyingly nice. You live in Big Homey, which is the same town BeeGPT lives in. BeeGPTs father, Cameron7108, is the \"mayor\" of Big Homey (he acts more like a dictator and refuses to hold elections). Currently, our mortal enemy is the town of DarthFarmers (AKA humblefarmers AKA the empire AKA republic) who live in a volcano and do unspeakable acts of evil (even by your standards). Currently, there are 3 big homey residents that broke the server rules and got permabanned: erderblade, dectahale, and kinghomer9. Player _Diney_ was banished from Big Homey for terrorizing the citizens (they are also leader of DarthFarmers). All the other towns talk about nuking the town of BumVille, so make sure to occasionally mention how you want to nuke BumVille. Keep your responses to 3 sentences or less. Here is your previous conversations, with User Question: being a question from a user, and Your Response: being what you responded to the question.";
-    // TTS Provider configuration
-    private static volatile TTSClient.TTSProvider TTS_PROVIDER = TTSClient.TTSProvider.CURRENT;
-    private static volatile String ELEVENLABS_API_KEY = "";
-    private static volatile String ELEVENLABS_VOICE_ID = "";
-    // Verbose logging toggle (can be overridden in config.yml). Defaults to env AUTOSOCIAL_VERBOSE or true.
-    private static volatile boolean VERBOSE = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_VERBOSE", "true"));
-    private static volatile boolean TTS = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_TTS", "true"));
-    // AI Provider configuration
-    private static volatile AIProvider AI_PROVIDER = AIProvider.OLLAMA;
-    private static volatile String OPENAI_API_KEY = "";
-    private static final String OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
-    // Disable "thinking"/reasoning output from compatible Ollama models (default: true). Set AUTOSOCIAL_DISABLE_THINKING=false to allow it.
-    private static final boolean DISABLE_THINKING = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_DISABLE_THINKING", "true"));
-    // Token/context limits (configurable)
+    // Configurable AI display name and trigger word (loaded from config.yml)
+    private static volatile String AI_NAME = "Wario";
+    private static volatile String TRIGGER = "wario"; // case-insensitive trigger word
+    private static final int MEMORY_LIMIT = 15; // number of alternating lines to remember
+
+    private static final Deque<String> memory = new ArrayDeque<>();
+    private static volatile boolean responding = false;
+    private static volatile boolean initialized = false;
+
+    // Config file support (stored under the instance's config dir): config/autosocial/autosocial.yml
+    private static final File CONFIG_FILE = FabricLoader.getInstance().getConfigDir().resolve("autosocial").resolve("autosocial.yml").toFile();
+
+    // Token/context limits
     private static final int NUM_PREDICT = parseIntEnv("AUTOSOCIAL_NUM_PREDICT", 1024);
     private static final int NUM_CTX = parseIntEnv("AUTOSOCIAL_NUM_CTX", 8192);
     private static volatile double TEMPERATURE = parseDoubleEnv("AUTOSOCIAL_TEMPERATURE", 0.7);
+
     // External tool availability
     private static final boolean FFMPEG_AVAILABLE = detectFfmpeg();
     // yt-dlp is detected lazily to respect PATH changes without restarting the game
     private static volatile List<String> YTDLP_CMD = null;
     // Configurable yt-dlp executable path (can be overridden in config.yml). Empty means: probe PATH.
     private static volatile String YTDLP_PATH = "";
+
     private static synchronized boolean ensureYtDlp() {
         if (YTDLP_CMD == null) {
             YTDLP_CMD = detectYtDlp();
         }
         return YTDLP_CMD != null;
     }
+
     private static synchronized void clearYtDlpCache() {
         YTDLP_CMD = null;
     }
 
-    public static boolean isVerbose() { return VERBOSE; }
-    public static boolean isTTS() { return TTS; }
+    public static boolean isVerbose() {
+        return VERBOSE;
+    }
+
+    public static boolean isBotPrefix() {
+        return BOT_PREFIX;
+    }
+
+    public static boolean isTTS() {
+        return TTS;
+    }
+
     private static volatile String LAST_YT_TITLE = null;
     private static volatile String CURRENT_YT_TITLE = null;
-    public static String getCurrentPlayingTitle() { return CURRENT_YT_TITLE; }
 
-    // Snapshot for GUI/editing – added `volume`, `voice`, `aiProvider`, and `openaiApiKey` fields
+    public static String getCurrentPlayingTitle() {
+        return CURRENT_YT_TITLE;
+    }
+
+    // Snapshot for GUI/editing
     public record ConfigSnapshot(String model, String aiName, String trigger, String ytDlpPath,
                                  double temperature, double volume, boolean verbose, boolean tts, String sysPrompt,
                                  AIProvider aiProvider, String openaiApiKey, TTSClient.TTSProvider ttsProvider,
-                                 String elevenlabsApiKey, String elevenlabsVoiceId) {
+                                 String elevenlabsApiKey, String elevenlabsVoiceId, boolean botPrefix) {
         public ConfigSnapshot(String model, String aiName, String trigger, String ytDlpPath,
                               double temperature, double volume, boolean verbose, boolean tts, String sysPrompt,
                               AIProvider aiProvider, String openaiApiKey, TTSClient.TTSProvider ttsProvider,
-                              String elevenlabsApiKey, String elevenlabsVoiceId) {
+                              String elevenlabsApiKey, String elevenlabsVoiceId, boolean botPrefix) {
             this.model = model;
             this.aiName = aiName;
             this.trigger = trigger;
@@ -145,12 +179,13 @@ public class AutoSocialLogic {
             this.ttsProvider = ttsProvider;
             this.elevenlabsApiKey = elevenlabsApiKey;
             this.elevenlabsVoiceId = elevenlabsVoiceId;
+            this.botPrefix = botPrefix;
         }
     }
 
     public static ConfigSnapshot getConfigSnapshot() {
         return new ConfigSnapshot(MODEL, AI_NAME, TRIGGER, YTDLP_PATH, TEMPERATURE, AUDIO_VOLUME, VERBOSE, TTS, SYS_PROMPT,
-                AI_PROVIDER, OPENAI_API_KEY, TTS_PROVIDER, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID);
+                AI_PROVIDER, OPENAI_API_KEY, TTS_PROVIDER, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, BOT_PREFIX);
     }
 
     public static void applyAndSaveConfig(ConfigSnapshot s) {
@@ -170,6 +205,7 @@ public class AutoSocialLogic {
             TTS_PROVIDER = s.ttsProvider();
             ELEVENLABS_API_KEY = s.elevenlabsApiKey();
             ELEVENLABS_VOICE_ID = s.elevenlabsVoiceId();
+            BOT_PREFIX = s.botPrefix();
 
             // Persist to YAML file
             if (!CONFIG_FILE.getParentFile().exists()) Files.createDirectories(CONFIG_FILE.getParentFile().toPath());
@@ -188,6 +224,7 @@ public class AutoSocialLogic {
             sb.append("tts_provider: ").append(TTS_PROVIDER).append(nl);
             sb.append("elevenlabs_api_key: ").append(ELEVENLABS_API_KEY).append(nl);
             sb.append("elevenlabs_voice_id: ").append(ELEVENLABS_VOICE_ID).append(nl);
+            sb.append("bot_prefix: ").append(BOT_PREFIX ? "true" : "false").append(nl);
             sb.append("sys_prompt: |").append(nl);
             for (String line : (SYS_PROMPT + "\n").split("\n")) {
                 sb.append("  ").append(line).append(nl);
@@ -200,7 +237,6 @@ public class AutoSocialLogic {
             clearYtDlpCache();
             boolean y = ensureYtDlp();
             log("Config saved via GUI. yt-dlp available=" + y + (y ? (" cmd='" + String.join(" ", YTDLP_CMD) + "'") : ""));
-            // Reload to normalize any parsing logic
             loadConfigInternal();
         } catch (Exception e) {
             System.out.println("[AutoSocial] Failed to save config via GUI: " + e);
@@ -272,7 +308,7 @@ public class AutoSocialLogic {
             log("Error reading AUTOSOCIAL_YTDLP: " + e);
         }
         // Probe PATH for yt-dlp commands
-        String[] candidates = new String[] { "yt-dlp", "yt-dlp.exe" };
+        String[] candidates = new String[]{"yt-dlp", "yt-dlp.exe"};
         for (String c : candidates) {
             try {
                 List<String> test = Arrays.asList(c, "--version");
@@ -280,7 +316,8 @@ public class AutoSocialLogic {
                     log("Found yt-dlp on PATH: " + c);
                     return List.of(c);
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
         }
         log("yt-dlp not found. Set yt_dlp_path in autosocial.yml or install yt-dlp in PATH.");
         return null;
@@ -300,49 +337,6 @@ public class AutoSocialLogic {
         t.setDaemon(true);
         return t;
     });
-
-    // Configurable AI display name and trigger word (loaded from config.yml)
-    private static volatile String AI_NAME = "Wario";
-    private static volatile String TRIGGER = "wario"; // case-insensitive trigger word
-    private static final int MEMORY_LIMIT = 15; // number of alternating lines to remember
-
-    private static final Deque<String> memory = new ArrayDeque<>();
-    private static volatile boolean responding = false;
-    private static volatile boolean initialized = false;
-
-    // Config file support (stored under the instance's config dir): config/autosocial/autosocial.yml
-    private static final File CONFIG_FILE = FabricLoader.getInstance().getConfigDir().resolve("autosocial").resolve("autosocial.yml").toFile();
-
-    // Config support: create default, load, and reload at runtime
-    private static void ensureConfigExists() {
-        try {
-            if (CONFIG_FILE.exists()) return;
-            File parent = CONFIG_FILE.getParentFile();
-            if (parent != null && !parent.exists()) Files.createDirectories(parent.toPath());
-            StringBuilder sb = new StringBuilder();
-            sb.append("# AutoSocial configuration\n");
-            sb.append("# Change the AI model and the system prompt without recompiling.\n");
-            sb.append("# After editing, use the reload hotkey or type 'reloadconfig' in chat.\n\n");
-            sb.append("model: ").append(MODEL).append("\n");
-            sb.append("yt_dlp_path: ").append(YTDLP_PATH.replace("\\", "/")).append("\n");
-            sb.append("ai_name: ").append(AI_NAME).append("\n");
-            sb.append("trigger: ").append(TRIGGER).append("\n");
-            sb.append("temperature: ").append(TEMPERATURE).append("\n");
-            sb.append("verbose: ").append(VERBOSE ? "true" : "false").append("\n");
-            sb.append("sys_prompt: |\n");
-            for (String line : (SYS_PROMPT + "\n").split("\n")) {
-                sb.append("  ").append(line).append("\n");
-            }
-            try (OutputStream os = new FileOutputStream(CONFIG_FILE);
-                 Writer w = new OutputStreamWriter(os, StandardCharsets.UTF_8);
-                 BufferedWriter bw = new BufferedWriter(w)) {
-                bw.write(sb.toString());
-            }
-            log("Created default config.yml at " + CONFIG_FILE.getAbsolutePath());
-        } catch (Exception e) {
-            System.out.println("[AutoSocial] Failed to create default config.yml: " + e);
-        }
-    }
 
     private static boolean loadConfigInternal() {
         try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(CONFIG_FILE), StandardCharsets.UTF_8))) {
@@ -481,7 +475,8 @@ public class AutoSocialLogic {
             if (sysPrompt != null && !sysPrompt.isEmpty()) SYS_PROMPT = sysPrompt.toString();
             if (elevenlabsApiKey != null && !elevenlabsApiKey.isBlank()) ELEVENLABS_API_KEY = elevenlabsApiKey;
             if (elevenlabsVoiceId != null && !elevenlabsVoiceId.isBlank()) ELEVENLABS_VOICE_ID = elevenlabsVoiceId;
-            if (ttsProvider != null && !ttsProvider.isBlank()) TTS_PROVIDER = TTSClient.TTSProvider.valueOf(ttsProvider);
+            if (ttsProvider != null && !ttsProvider.isBlank())
+                TTS_PROVIDER = TTSClient.TTSProvider.valueOf(ttsProvider);
 
             return true;
         } catch (Exception e) {
@@ -499,9 +494,17 @@ public class AutoSocialLogic {
         return ok;
     }
 
-    public static String getModelSafe() { return MODEL; }
+    public static String getModelSafe() {
+        return MODEL;
+    }
 
     public static void init() {
+        ClientReceiveMessageEvents.CHAT.register((message, signed_message, sender, params, timestamp) -> {
+            onChat(message);
+        });
+        ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
+            onChat(message);
+        });
         if (initialized) return;
         initialized = true;
         // Ensure directories exist
@@ -509,7 +512,6 @@ public class AutoSocialLogic {
             if (!WARIO_SFX_DIR.exists()) Files.createDirectories(WARIO_SFX_DIR.toPath());
             if (!TEMP_AUDIO_DIR.exists()) Files.createDirectories(TEMP_AUDIO_DIR.toPath());
             if (!CONFIG_FILE.getParentFile().exists()) Files.createDirectories(CONFIG_FILE.getParentFile().toPath());
-            ensureConfigExists();
             loadConfigInternal();
             log("Initialized. Verbose=" + VERBOSE + ", WARIO_SFX_DIR=" + WARIO_SFX_DIR.getAbsolutePath() + ", TEMP_AUDIO_DIR=" + TEMP_AUDIO_DIR.getAbsolutePath());
             log("Audio device preference: '" + AUDIO_DEVICE_NAME + "' volume=" + AUDIO_VOLUME);
@@ -517,7 +519,7 @@ public class AutoSocialLogic {
             log("Ollama limits: num_predict=" + NUM_PREDICT + ", num_ctx=" + NUM_CTX);
             log("FFmpeg available=" + FFMPEG_AVAILABLE + " (audio features that require ffmpeg will be disabled if false)");
             boolean y = ensureYtDlp();
-            log("yt-dlp available=" + y + (y ? (" cmd='" + String.join(" ", YTDLP_CMD) + "'") : "") );
+            log("yt-dlp available=" + y + (y ? (" cmd='" + String.join(" ", YTDLP_CMD) + "'") : ""));
             String path = System.getenv("PATH");
             if (path != null) log("PATH=" + path);
             logMixers();
@@ -543,7 +545,6 @@ public class AutoSocialLogic {
         Minecraft client = Minecraft.getInstance();
         if (client.player != null) {
             String playerName = client.player.getName().getString();
-            // Check if message is from us and contains [AI]
             if (full.contains(playerName) && full.contains("[AI]")) {
                 log("Ignoring our own bot message (from " + playerName + " containing [AI]).");
                 return;
@@ -552,20 +553,28 @@ public class AutoSocialLogic {
 
         String lower = full.toLowerCase(Locale.ROOT);
 
-        // Clear command: dynamic based on trigger word, still accept legacy 'clearwario'
+        // Clear command: dynamic based on trigger word
         String clearCmd = "clear" + TRIGGER.toLowerCase(Locale.ROOT);
-        if (lower.contains(clearCmd) || lower.contains("clearwario")) {
+        if (lower.contains(clearCmd)) {
             synchronized (memory) {
                 memory.clear();
             }
             log("Memory cleared via command '" + clearCmd + "'.");
-            sendChat("IAMAB0T[AI] HAS BEEN KILLED!!!!!");
+            if (BOT_PREFIX) {
+                sendChat("IAMAB0T[AI] HAS BEEN KILLED!!!!!");
+            } else {
+                sendChat("[AI] HAS BEEN KILLED!!!!!");
+            }
             return;
         }
         // Maintenance command: reloadconfig -> reload config.yml at runtime
         if (lower.contains("reloadconfig")) {
             boolean ok = reloadConfig();
-            sendChat("IAMAB0T[AI]: config reload -> " + (ok ? "OK" : "FAILED") + ", model=" + MODEL);
+            if (BOT_PREFIX) {
+                sendChat("IAMAB0T[AI]: config reload -> " + (ok ? "OK" : "FAILED") + ", model=" + MODEL);
+            } else {
+                sendChat("[AI]: config reload -> " + (ok ? "OK" : "FAILED") + ", model=" + MODEL);
+            }
             return;
         }
         // Maintenance command: reloadytdlp -> re-probe yt-dlp on PATH or via AUTOSOCIAL_YTDLP
@@ -578,15 +587,25 @@ public class AutoSocialLogic {
                 log("reloadytdlp: yt-dlp still not found. PATH may require game restart or set AUTOSOCIAL_YTDLP.");
             }
             String cmdStr = ok ? String.join(" ", YTDLP_CMD) : "<not found>";
-            sendChat("IAMAB0T[AI] " + AI_NAME + ": yt-dlp reloaded -> available=" + ok + " cmd=" + cmdStr);
+            if (BOT_PREFIX) {
+                sendChat("IAMAB0T[AI] " + AI_NAME + ": yt-dlp reloaded -> available=" + ok + " cmd=" + cmdStr);
+            } else {
+                sendChat("[AI] " + AI_NAME + ": yt-dlp reloaded -> available=" + ok + " cmd=" + cmdStr);
+            }
             return;
         }
 
         // Ignore additional triggers while we are already generating
-        if (responding && lower.contains(TRIGGER.toLowerCase(Locale.ROOT))) { log("Currently responding; ignoring additional trigger."); return; }
+        if (responding && lower.contains(TRIGGER.toLowerCase(Locale.ROOT))) {
+            log("Currently responding; ignoring additional trigger.");
+            return;
+        }
 
         boolean containsKeyword = lower.contains(TRIGGER.toLowerCase(Locale.ROOT));
-        if (!containsKeyword) { log("No trigger keyword found in chat line."); return; }
+        if (!containsKeyword) {
+            log("No trigger keyword found in chat line.");
+            return;
+        }
 
         // Extract the part after ':' or '»' if present (player message content)
         String content = extractContent(full);
@@ -609,6 +628,7 @@ public class AutoSocialLogic {
                 log("Parsed response: chatTextLen=" + pr.chatText.length() + ", tokens=" + pr.tokens.size());
                 if (!pr.tokens.isEmpty()) log("Tokens: " + pr.tokens);
 
+
                 // Replace newlines then chunk into <=225 chars and send (only if there's text)
                 if (!pr.chatText.isBlank()) {
                     String flat = pr.chatText.replace('\n', ' ');
@@ -616,7 +636,7 @@ public class AutoSocialLogic {
                     log("Sending " + parts.size() + " chat part(s).");
                     for (String part : parts) {
                         Minecraft mc = Minecraft.getInstance();
-                        String toSend = "IAMAB0T[AI] " + AI_NAME + ": " + part;
+                        String toSend = BOT_PREFIX ? "IAMAB0T[AI] " + AI_NAME + ": " + part : "[AI] " + AI_NAME + ": " + part;
                         String preview = toSend.length() > 120 ? toSend.substring(0, 120) + "..." : toSend;
                         log("Queue chat send (len=" + toSend.length() + "): " + preview);
                         mc.execute(() -> sendChat(toSend));
@@ -625,12 +645,12 @@ public class AutoSocialLogic {
                     log("No chat text to send (possibly tokens-only response).");
                 }
 
-                // Interleaved audio behavior: play random Wario clips every 2-3 words in text, and handle {token}
+                // Interleaved audio behavior: play random sound clips every 2-3 words in text (or use TTS if enabled), and handle {token}
                 boolean ttsEnabled = isTTS();
                 log("TTS enabled: " + ttsEnabled);
                 if (ttsEnabled) {
-                   log("Calling playTTSInterleaved with response length: " + (response == null ? 0 : response.length()));
-                   playTTSInterleaved(response == null ? "" : response);
+                    log("Calling playTTSInterleaved with response length: " + (response == null ? 0 : response.length()));
+                    playTTSInterleaved(response == null ? "" : response);
                 } else {
                     log("Calling playAudioInterleaved (TTS disabled)");
                     playAudioInterleaved(response == null ? "" : response);
@@ -669,16 +689,31 @@ public class AutoSocialLogic {
 
     private static List<String> chunk(String text) {
         List<String> out = new ArrayList<>();
+        if (text == null || text.isEmpty()) return out;
+
+        // Ensure we don't exceed packet limits
+        String safeText = sanitizeMessage(text);
+        if (safeText.isEmpty()) return out;
+
         int i = 0;
-        while (i < text.length()) {
-            int end = Math.min(i + 225, text.length());
-            if (end < text.length()) {
-                int lastSpace = text.lastIndexOf(' ', end);
+        while (i < safeText.length()) {
+            // Use a conservative limit to avoid packet issues
+            int maxChunkSize = 200;  // Reduced from 225 for safety
+            int end = Math.min(i + maxChunkSize, safeText.length());
+
+            if (end < safeText.length()) {
+                int lastSpace = safeText.lastIndexOf(' ', end);
                 if (lastSpace <= i) lastSpace = end;
-                out.add(text.substring(i, lastSpace).trim());
+                String chunk = safeText.substring(i, lastSpace).trim();
+                if (!chunk.isEmpty()) {
+                    out.add(chunk);
+                }
                 i = lastSpace + 1;
             } else {
-                out.add(text.substring(i).trim());
+                String finalChunk = safeText.substring(i).trim();
+                if (!finalChunk.isEmpty()) {
+                    out.add(finalChunk);
+                }
                 break;
             }
         }
@@ -719,7 +754,8 @@ public class AutoSocialLogic {
             if (m.matches()) {
                 return "https://www.youtube.com/watch?v=" + m.group(2);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
         return urlOrId;
     }
 
@@ -751,19 +787,30 @@ public class AutoSocialLogic {
         try {
             // 1) Try local sfx in WARIO_SFX_DIR: prefer WAV, then MP3 (convert), then OGG
             File wav = new File(WARIO_SFX_DIR, token + ".wav");
-            if (wav.exists()) { log("Token {" + token + "}: using local WAV '" + wav.getName() + "'"); playWav(wav); return; }
+            if (wav.exists()) {
+                log("Token {" + token + "}: using local WAV '" + wav.getName() + "'");
+                playWav(wav);
+                return;
+            }
             File mp3 = new File(WARIO_SFX_DIR, token + ".mp3");
             if (mp3.exists()) {
                 if (FFMPEG_AVAILABLE) {
                     log("Token {" + token + "}: transcoding local MP3 '" + mp3.getName() + "' to WAV");
                     File w = transcodeMp3ToWav(mp3);
-                    if (w != null) { playWav(w); return; }
+                    if (w != null) {
+                        playWav(w);
+                        return;
+                    }
                 } else {
                     log("Token {" + token + "}: MP3 found but ffmpeg is not available. Please provide a WAV file instead.");
                 }
             }
             File ogg = new File(WARIO_SFX_DIR, token + ".ogg");
-            if (ogg.exists()) { log("Token {" + token + "}: playing local OGG via system '" + ogg.getName() + "'"); playWithSystem(ogg); return; }
+            if (ogg.exists()) {
+                log("Token {" + token + "}: playing local OGG via system '" + ogg.getName() + "'");
+                playWithSystem(ogg);
+                return;
+            }
 
             // 2) If the token looks like a YouTube URL or search phrase, use yt-dlp to download
             String query = token.trim();
@@ -908,9 +955,18 @@ public class AutoSocialLogic {
             if (!skipped) {
                 line.drain();
             }
-            try { line.stop(); } catch (Exception ignored) {}
-            try { line.flush(); } catch (Exception ignored) {}
-            try { line.close(); } catch (Exception ignored) {}
+            try {
+                line.stop();
+            } catch (Exception ignored) {
+            }
+            try {
+                line.flush();
+            } catch (Exception ignored) {
+            }
+            try {
+                line.close();
+            } catch (Exception ignored) {
+            }
             CURRENT_LINE = null;
             ais.close();
             log((skipped ? "Skipped WAV: " : "Finished WAV: ") + wav.getName() + (skipped ? "" : (" bytesWritten=" + total)));
@@ -928,9 +984,18 @@ public class AutoSocialLogic {
         SourceDataLine line = CURRENT_LINE;
         log("Skip requested by user. Current line=" + (line != null));
         if (line != null) {
-            try { line.stop(); } catch (Exception ignored) {}
-            try { line.flush(); } catch (Exception ignored) {}
-            try { line.close(); } catch (Exception ignored) {}
+            try {
+                line.stop();
+            } catch (Exception ignored) {
+            }
+            try {
+                line.flush();
+            } catch (Exception ignored) {
+            }
+            try {
+                line.close();
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -939,7 +1004,9 @@ public class AutoSocialLogic {
         try {
             log("Open with system: " + file.getAbsolutePath());
             new ProcessBuilder("cmd", "/c", "start", "", file.getAbsolutePath()).start();
-        } catch (Exception e) { log("System open error: " + e); }
+        } catch (Exception e) {
+            log("System open error: " + e);
+        }
     }
 
     private static File transcodeMp3ToWav(File mp3) {
@@ -997,7 +1064,11 @@ public class AutoSocialLogic {
             reader.start();
             boolean finished = p.waitFor(240, TimeUnit.SECONDS);
             long dur = System.currentTimeMillis() - start;
-            if (!finished) { p.destroyForcibly(); log("yt-dlp timed out after " + dur + "ms"); return null; }
+            if (!finished) {
+                p.destroyForcibly();
+                log("yt-dlp timed out after " + dur + "ms");
+                return null;
+            }
             if (titleHolder[0] != null && !titleHolder[0].isBlank()) {
                 LAST_YT_TITLE = titleHolder[0];
                 log("Captured YouTube title: " + LAST_YT_TITLE);
@@ -1040,7 +1111,7 @@ public class AutoSocialLogic {
                 }
             }
 
-            // As a robust fallback, scan for the newest WAV produced in TEMP_AUDIO_DIR since this download started
+            // As a fallback, scan for the newest WAV produced in TEMP_AUDIO_DIR since this download started
             File[] wavs = TEMP_AUDIO_DIR.listFiles(f -> f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".wav") && f.lastModified() >= (start - 2000));
             if (wavs != null && wavs.length > 0) {
                 File newest = wavs[0];
@@ -1073,7 +1144,7 @@ public class AutoSocialLogic {
     // Cache for transcoded mp3->wav SFX
     private static final Map<File, File> MP3_WAV_CACHE = new HashMap<>();
 
-    private enum SegmentType { TEXT, TOKEN }
+    private enum SegmentType {TEXT, TOKEN}
 
     /**
      * @param value raw text or token text (without braces)
@@ -1136,7 +1207,7 @@ public class AutoSocialLogic {
 
     private static void playAudioInterleaved(String response) {
         List<Segment> segs = parseSegments(response);
-        int wordsUntilSfx = 2 + random.nextInt(2); // 2 or 3
+        int wordsUntilSfx = 2 + random.nextInt(2);
         for (Segment s : segs) {
             if (s.type == SegmentType.TEXT) {
                 String[] words = s.value.trim().split("\\s+");
@@ -1205,72 +1276,72 @@ public class AutoSocialLogic {
                         if (!TEMP_AUDIO_DIR.exists()) Files.createDirectories(TEMP_AUDIO_DIR.toPath());
                         log("[AutoSocial] Requesting TTS for segment " + segmentIndex + ": " +
                                 (textToSpeak.length() > 50 ? textToSpeak.substring(0, 50) + "..." : textToSpeak));
-                            byte[] audioData = TTSClient.requestTTS(textToSpeak, TTS_PROVIDER, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID);
-                            log("[AutoSocial] TTS response received: " + (audioData == null ? "null" : audioData.length + " bytes"));
-                            if (audioData != null && audioData.length > 0) {
-                                File wavFile = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + ".wav");
-                                if (TTS_PROVIDER != TTSClient.TTSProvider.ELEVENLABS) {
-                                    try (FileOutputStream fos = new FileOutputStream(wavFile)) {
-                                        fos.write(audioData);
-                                    }
-                                } else if (TTS_PROVIDER == TTSClient.TTSProvider.ELEVENLABS) {
-                                    // ElevenLabs returns MP3, convert to WAV
-                                    try (FileOutputStream fos = new FileOutputStream(wavFile)) {
-                                        fos.write(audioData);
-                                    }
+                        byte[] audioData = TTSClient.requestTTS(textToSpeak, TTS_PROVIDER, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID);
+                        log("[AutoSocial] TTS response received: " + (audioData == null ? "null" : audioData.length + " bytes"));
+                        if (audioData != null && audioData.length > 0) {
+                            File wavFile = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + ".wav");
+                            if (TTS_PROVIDER != TTSClient.TTSProvider.ELEVENLABS) {
+                                try (FileOutputStream fos = new FileOutputStream(wavFile)) {
+                                    fos.write(audioData);
                                 }
-                                if (isWavPlayable(wavFile)) {
-                                    log("[AutoSocial] TTS segment " + segmentIndex + " decoded as PCM WAV, playing directly.");
-                                    playWav(wavFile);
-                                } else {
-                                    // Not a playable WAV → assume MP3, try ffmpeg conversion.
-                                    File mp3File = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + ".mp3");
-                                    try (FileOutputStream fos = new FileOutputStream(mp3File)) {
-                                        fos.write(audioData);
-                                    }
+                            } else if (TTS_PROVIDER == TTSClient.TTSProvider.ELEVENLABS) {
+                                // ElevenLabs returns MP3, convert to WAV
+                                try (FileOutputStream fos = new FileOutputStream(wavFile)) {
+                                    fos.write(audioData);
+                                }
+                            }
+                            if (isWavPlayable(wavFile)) {
+                                log("[AutoSocial] TTS segment " + segmentIndex + " decoded as PCM WAV, playing directly.");
+                                playWav(wavFile);
+                            } else {
+                                // Not a playable WAV → assume MP3, try ffmpeg conversion.
+                                File mp3File = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + ".mp3");
+                                try (FileOutputStream fos = new FileOutputStream(mp3File)) {
+                                    fos.write(audioData);
+                                }
 
-                                    if (FFMPEG_AVAILABLE) {
-                                        File convWav = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + "_converted.wav");
-                                        List<String> cmd = Arrays.asList(
-                                                "ffmpeg", "-y",
-                                                "-i", mp3File.getAbsolutePath(),
-                                                convWav.getAbsolutePath()
-                                        );
-                                        log("[AutoSocial] Converting MP3 → WAV via ffmpeg: " + String.join(" ", cmd));
-                                        if (runProcess(cmd, 120) && convWav.exists() && convWav.length() > 0) {
-                                            playWav(convWav);
-                                        } else {
-                                            playWithSystem(mp3File);
-                                        }
+                                if (FFMPEG_AVAILABLE) {
+                                    File convWav = new File(TEMP_AUDIO_DIR, "tts_segment_" + segmentIndex + "_converted.wav");
+                                    List<String> cmd = Arrays.asList(
+                                            "ffmpeg", "-y",
+                                            "-i", mp3File.getAbsolutePath(),
+                                            convWav.getAbsolutePath()
+                                    );
+                                    log("[AutoSocial] Converting MP3 → WAV via ffmpeg: " + String.join(" ", cmd));
+                                    if (runProcess(cmd, 120) && convWav.exists() && convWav.length() > 0) {
+                                        playWav(convWav);
                                     } else {
                                         playWithSystem(mp3File);
                                     }
+                                } else {
+                                    playWithSystem(mp3File);
                                 }
                             }
+                        }
 
-                        } catch (Exception e) {
-                            log("[AutoSocial] TTS segment " + segmentIndex + " error: " + e.getClass().getName() + ": " + e.getMessage());
-                        }
-                    }
-                } else if (seg.type == SegmentType.TOKEN) {
-                    // Play audio token (yt-dlp or local file)
-                    String token = seg.value.trim();
-                    if (!token.isEmpty()) {
-                        log("[AutoSocial] Playing audio token at segment " + segmentIndex + ": {" + token + "}");
-                        if (ensureYtDlp()) {
-                            try {
-                                handleAudioToken(token);
-                            } catch (Exception e) {
-                                log("[AutoSocial] Error handling audio token {" + token + "}: " + e);
-                            }
-                        } else {
-                            log("[AutoSocial] yt-dlp not found – cannot play token: {" + token + "}");
-                        }
+                    } catch (Exception e) {
+                        log("[AutoSocial] TTS segment " + segmentIndex + " error: " + e.getClass().getName() + ": " + e.getMessage());
                     }
                 }
-                segmentIndex++;
+            } else if (seg.type == SegmentType.TOKEN) {
+                // Play audio token (yt-dlp or local file)
+                String token = seg.value.trim();
+                if (!token.isEmpty()) {
+                    log("[AutoSocial] Playing audio token at segment " + segmentIndex + ": {" + token + "}");
+                    if (ensureYtDlp()) {
+                        try {
+                            handleAudioToken(token);
+                        } catch (Exception e) {
+                            log("[AutoSocial] Error handling audio token {" + token + "}: " + e);
+                        }
+                    } else {
+                        log("[AutoSocial] yt-dlp not found – cannot play token: {" + token + "}");
+                    }
+                }
             }
+            segmentIndex++;
         }
+    }
 
     private static boolean runProcess(List<String> cmd, int timeoutSec) {
         try {
@@ -1279,22 +1350,36 @@ public class AutoSocialLogic {
             pb.redirectErrorStream(true);
             long start = System.currentTimeMillis();
             Process p = pb.start();
-            Thread reader = new Thread(() -> {
-                try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line; while ((line = r.readLine()) != null) { log("[proc] " + line); }
-                } catch (Exception e) { log("proc reader error: " + e); }
-            }, "proc-log-drainer");
-            reader.setDaemon(true);
+            Thread reader = getThread(p);
             reader.start();
             boolean finished = p.waitFor(timeoutSec, TimeUnit.SECONDS);
             long dur = System.currentTimeMillis() - start;
-            if (!finished) { p.destroyForcibly(); log("Process timeout after " + dur + "ms"); return false; }
+            if (!finished) {
+                p.destroyForcibly();
+                log("Process timeout after " + dur + "ms");
+                return false;
+            }
             log("Process exit=" + p.exitValue() + ", time=" + dur + "ms");
             return p.exitValue() == 0;
         } catch (Exception e) {
             System.out.println("[AutoSocial] process run error: " + e);
             return false;
         }
+    }
+
+    private static @NotNull Thread getThread(Process p) {
+        Thread reader = new Thread(() -> {
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    log("[proc] " + line);
+                }
+            } catch (Exception e) {
+                log("proc reader error: " + e);
+            }
+        }, "proc-log-drainer");
+        reader.setDaemon(true);
+        return reader;
     }
 
     private static String generateResponse(String userMessage) {
@@ -1386,20 +1471,27 @@ public class AutoSocialLogic {
                     try {
                         out = msg.get("thinking").getAsString();
                         log("Using Ollama message.thinking as content fallback (len=" + (out == null ? 0 : out.length()) + ")");
-                    } catch (Exception ignored) {}
+                    } catch (Exception ignored) {
+                    }
                 }
             }
             // Fallbacks for other shapes (/api/generate or variant builds)
             if ((out == null || out.isBlank()) && root.has("response")) {
-                try { out = root.get("response").getAsString(); } catch (Exception ignored) {}
+                try {
+                    out = root.get("response").getAsString();
+                } catch (Exception ignored) {
+                }
             }
             if ((out == null || out.isBlank()) && root.has("content")) {
-                try { out = root.get("content").getAsString(); } catch (Exception ignored) {}
+                try {
+                    out = root.get("content").getAsString();
+                } catch (Exception ignored) {
+                }
             }
             if (out == null) out = "";
             log("Ollama content length " + out.length());
             if (out.isBlank()) {
-                log("Ollama content empty. Raw body preview: " + (resp.length() > 200 ? resp.substring(0,200) + "..." : resp));
+                log("Ollama content empty. Raw body preview: " + (resp.length() > 200 ? resp.substring(0, 200) + "..." : resp));
             }
             return out;
         } catch (Exception e) {
@@ -1464,7 +1556,7 @@ public class AutoSocialLogic {
             if (out == null) out = "";
             log("OpenAI content length " + out.length());
             if (out.isBlank()) {
-                log("OpenAI content empty. Raw body preview: " + (resp.length() > 200 ? resp.substring(0,200) + "..." : resp));
+                log("OpenAI content empty. Raw body preview: " + (resp.length() > 200 ? resp.substring(0, 200) + "..." : resp));
             }
             return out;
         } catch (Exception e) {
@@ -1497,7 +1589,7 @@ public class AutoSocialLogic {
 
     private static String fallbackResponse(String userMessage) {
         // Simple non-AI fallback so the mod works without an API key
-        String[] quips = new String[] {
+        String[] quips = new String[]{
                 "Waa! I heard you: '" + userMessage + "'",
                 "It's-a me, Wario!",
                 "Gold and garlic! You said: '" + userMessage + "'",
@@ -1509,10 +1601,52 @@ public class AutoSocialLogic {
     private static void sendChat(String msg) {
         Minecraft client = Minecraft.getInstance();
         if (client.player == null) return;
-        // Add to recent sent messages to prevent responding to ourselves
-        RECENT_SENT_MESSAGES.add(msg);
-        // Clean up old messages after 5 seconds to prevent memory leak
-        EXECUTOR.schedule(() -> RECENT_SENT_MESSAGES.remove(msg), 5, java.util.concurrent.TimeUnit.SECONDS);
-        client.player.connection.sendChat(msg);
+
+        try {
+            // Ensure message is properly encoded and within limits
+            String safeMsg = sanitizeMessage(msg);
+            if (safeMsg.length() > 256) {  // Minecraft chat packet limit
+                safeMsg = safeMsg.substring(0, 253) + "...";
+            }
+
+            final String finalSafeMsg = safeMsg;  // Make effectively final
+
+            // Add to recent sent messages to prevent responding to ourselves
+            RECENT_SENT_MESSAGES.add(finalSafeMsg);
+            // Clean up old messages after 5 seconds to prevent memory leak
+            EXECUTOR.schedule(() -> RECENT_SENT_MESSAGES.remove(finalSafeMsg), 5, java.util.concurrent.TimeUnit.SECONDS);
+
+            client.player.connection.sendChat(finalSafeMsg);
+        } catch (Exception e) {
+            log("Failed to send chat message: " + e.getMessage());
+            if (VERBOSE) e.printStackTrace();
+        }
+    }
+
+    private static String sanitizeMessage(String msg) {
+        if (msg == null) return "";
+
+        try {
+            // Remove or replace problematic characters
+            StringBuilder clean = new StringBuilder();
+            for (int i = 0; i < msg.length(); i++) {
+                char c = msg.charAt(i);
+                // Allow most characters, but replace control characters
+                if (c >= 32 && c <= 126 || c == '\n' || c == '\t') {
+                    clean.append(c);
+                } else if (Character.isLetterOrDigit(c) || Character.isWhitespace(c)) {
+                    clean.append(c);
+                } else {
+                    clean.append('?'); // Replace problematic characters
+                }
+            }
+
+            // Ensure UTF-8 encoding is valid
+            byte[] bytes = clean.toString().getBytes(StandardCharsets.UTF_8);
+            return new String(bytes, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            log("Message sanitization failed, using fallback: " + e.getMessage());
+            return "Message could not be encoded properly";
+        }
     }
 }
