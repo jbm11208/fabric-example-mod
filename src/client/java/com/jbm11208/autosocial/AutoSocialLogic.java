@@ -4,37 +4,21 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.Gson;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.Screenshot;
 import net.minecraft.network.chat.Component;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import com.jbm11208.autosocial.tts.TTSClient;
 import org.jetbrains.annotations.NotNull;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
-import java.io.OutputStream;
-import java.io.Writer;
+import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Deque;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -499,12 +483,8 @@ public class AutoSocialLogic {
     }
 
     public static void init() {
-        ClientReceiveMessageEvents.CHAT.register((message, signed_message, sender, params, timestamp) -> {
-            onChat(message);
-        });
-        ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
-            onChat(message);
-        });
+        ClientReceiveMessageEvents.CHAT.register((message, signed_message, sender, params, timestamp) -> onChat(message));
+        ClientReceiveMessageEvents.GAME.register((message, overlay) -> onChat(message));
         if (initialized) return;
         initialized = true;
         // Ensure directories exist
@@ -1565,6 +1545,273 @@ public class AutoSocialLogic {
         }
     }
 
+    private static String getStringWithImage(String userMessage, String systemPrompt, String base64Image) {
+        // Check if model supports vision
+        if (!MODEL.toLowerCase().contains("vision") && !MODEL.toLowerCase().contains("gpt-4o")) {
+            log("Model " + MODEL + " may not support vision. Consider using a vision-capable model like 'gpt-4o' or 'gpt-4-vision-preview'");
+        }
+
+        JsonObject message = new JsonObject();
+        message.addProperty("role", "user");
+
+        JsonArray content = new JsonArray();
+
+        // Add text content
+        JsonObject textContent = new JsonObject();
+        textContent.addProperty("type", "text");
+        textContent.addProperty("text", userMessage);
+        content.add(textContent);
+
+        // Add image content if base64Image is provided
+        if (base64Image != null && !base64Image.isBlank()) {
+            // Clean base64 data by removing whitespace
+            String cleanedBase64 = base64Image.replaceAll("\\s+", "").trim();
+
+            // Check if the data already has a data URL prefix
+            String imageUrl;
+            if (cleanedBase64.startsWith("data:image/")) {
+                // Already has data URL prefix, use as-is
+                imageUrl = cleanedBase64;
+                log("Base64 data already has data URL prefix");
+            } else {
+                // Add the data URL prefix
+                imageUrl = "data:image/png;base64," + cleanedBase64;
+                log("Added data URL prefix to base64 data");
+            }
+
+            // Basic length check - if it's reasonably sized, assume it's valid
+            if (imageUrl.length() > 100) { // Reasonable minimum for any image
+                JsonObject imageContent = new JsonObject();
+                imageContent.addProperty("type", "image_url");
+
+                JsonObject imageUrlObj = new JsonObject();
+                imageUrlObj.addProperty("url", imageUrl);
+                imageContent.add("image_url", imageUrlObj);
+
+                content.add(imageContent);
+                log("Image URL prepared: " + imageUrl.length() + " characters");
+            } else {
+                log("Image URL too short to be valid. Length: " + imageUrl.length());
+            }
+        } else {
+            log("No base64 image data provided to getStringWithImage");
+        }
+
+        message.add("content", content);
+
+        // Create the full request structure
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("model", MODEL);
+
+        JsonArray messages = new JsonArray();
+
+        // Add system prompt if provided
+        if (systemPrompt != null && !systemPrompt.isBlank()) {
+            JsonObject systemMessage = new JsonObject();
+            systemMessage.addProperty("role", "system");
+            systemMessage.addProperty("content", systemPrompt);
+            messages.add(systemMessage);
+        }
+
+        // Add the user message with image
+        messages.add(message);
+        requestBody.add("messages", messages);
+        requestBody.addProperty("max_tokens", NUM_PREDICT);
+
+        String jsonString = new Gson().toJson(requestBody);
+        log("Generated JSON structure size: " + jsonString.getBytes(StandardCharsets.UTF_8).length + " bytes");
+        return jsonString;
+    }
+
+    public static void takeScreenshot() {
+        Minecraft client = Minecraft.getInstance();
+
+        // Schedule screenshot capture on main thread first
+        client.execute(() -> {
+            try {
+                log("Capturing screenshot on main thread...");
+
+                // Take screenshot using Minecraft's screenshot functionality
+                Screenshot.takeScreenshot(client.getMainRenderTarget(), png -> {
+                    try (png) {
+                        log("Screenshot captured, saving to file on main thread...");
+
+                        // Save to temporary file first (this must be on main thread)
+                        File temp = new File(TEMP_AUDIO_DIR, "screenshot.png");
+                        png.writeToFile(temp);
+
+                        log("Screenshot saved to: " + temp.getAbsolutePath() + " (" + temp.length() + " bytes)");
+
+                        // Now process the screenshot on a worker thread
+                        EXECUTOR.submit(() -> {
+                            try {
+                                // Read the file bytes on worker thread
+                                byte[] imageBytes = Files.readAllBytes(temp.toPath());
+                                log("Screenshot file read: " + imageBytes.length + " bytes");
+
+                                String base64 = Base64.getEncoder().encodeToString(imageBytes);
+                                log("Base64 encoded, length: " + base64.length());
+
+                                // Send to OpenAI (this is synchronous but won't block the game anymore)
+                                String response = sendToOpenAI(base64);
+                                log("OpenAI response received: " + (response != null ? response.length() : 0) + " characters");
+
+                                // Process response back on main thread for chat only
+                                client.execute(() -> {
+                                    try {
+                                        if (response != null && !response.isBlank()) {
+                                            pushMemory("User Question: " + "Please describe the image.");
+                                            pushMemory("Your Response: " + response);
+                                        }
+
+                                        // Parse response for audio tokens {.} and build segments for interleaved audio
+                                        ParsedResponse pr = parseCurlyTokens(response == null ? "" : response);
+                                        log("Parsed response: chatTextLen=" + pr.chatText.length() + ", tokens=" + pr.tokens.size());
+                                        if (!pr.tokens.isEmpty()) log("Tokens: " + pr.tokens);
+
+                                        // Replace newlines then chunk into <=225 chars and send (only if there's text)
+                                        if (!pr.chatText.isBlank()) {
+                                            String flat = pr.chatText.replace('\n', ' ');
+                                            List<String> parts = chunk(flat);
+                                            log("Sending " + parts.size() + " chat part(s).");
+                                            for (String part : parts) {
+                                                String toSend = BOT_PREFIX ? "IAMAB0T[AI] " + AI_NAME + ": " + part : "[AI] " + AI_NAME + ": " + part;
+                                                String preview = toSend.length() > 120 ? toSend.substring(0, 120) + "..." : toSend;
+                                                log("Queue chat send (len=" + toSend.length() + "): " + preview);
+                                                sendChat(toSend);
+                                            }
+                                        } else {
+                                            log("No chat text to send (possibly tokens-only response).");
+                                        }
+
+                                        log("Chat message sending complete.");
+                                    } catch (Exception e) {
+                                        log("Error sending chat message: " + e.getMessage());
+                                    }
+                                });
+
+                                // Process audio TTS on a separate worker thread to avoid blocking
+                                EXECUTOR.submit(() -> {
+                                    try {
+                                        // Interleaved audio behavior: play random sound clips every 2-3 words in text (or use TTS if enabled), and handle {token}
+                                        boolean ttsEnabled = isTTS();
+                                        log("TTS enabled: " + ttsEnabled);
+                                        if (ttsEnabled) {
+                                            log("Calling playTTSInterleaved with response length: " + (response == null ? 0 : response.length()));
+                                            playTTSInterleaved(response == null ? "" : response);
+                                        } else {
+                                            log("Calling playAudioInterleaved (TTS disabled)");
+                                            playAudioInterleaved(response == null ? "" : response);
+                                        }
+                                        log("Audio processing complete.");
+                                    } catch (Exception e) {
+                                        log("Error during audio processing: " + e.getMessage());
+                                    }
+                                });
+
+                            } catch (IOException e) {
+                                log("Screenshot file read error: " + e.getMessage());
+                            } catch (Exception e) {
+                                log("Screenshot processing error: " + e.getMessage());
+                            } finally {
+                                // Clean up temp file on worker thread
+                                try {
+                                    if (temp.exists()) {
+                                        boolean deleted = temp.delete();
+                                        log("Temp file cleanup: " + deleted);
+                                    }
+                                } catch (Exception e) {
+                                    log("Failed to delete temp file: " + e.getMessage());
+                                }
+                            }
+                        });
+
+                    } catch (IOException e) {
+                        log("Screenshot save error: " + e.getMessage());
+                    }
+                });
+
+            } catch (Exception e) {
+                log("Screenshot capture error: " + e.getMessage());
+            }
+        });
+    }
+
+    private static String sendToOpenAI(String png) {
+        StringBuilder sys = new StringBuilder();
+        sys.append(SYS_PROMPT).append(' ');
+        for (String m : memory) sys.append(m).append("\n");
+        sys.append("\nRemember, keep your response to 3 sentences or less. Each sentence is a maximum of 20 words. DO NOT say Your Response: or User Question:.\n");
+        String systemPrompt = sys.toString();
+        String userMessage = "Please describe the image.";
+        try {
+            if (OPENAI_API_KEY == null || OPENAI_API_KEY.isBlank()) {
+                log("OpenAI API key not configured. Please set it in the config.");
+                return fallbackResponse(userMessage);
+            }
+
+            // Build OpenAI chat payload with image support
+            String json;
+            if (png != null && !png.isBlank()) {
+                json = getStringWithImage(userMessage, systemPrompt, png);
+            } else {
+                json = getString(userMessage, systemPrompt);
+            }
+            log("OpenAI request: url=" + OPENAI_API_URL + ", model: " + MODEL + ", payloadBytes=" + json.getBytes(StandardCharsets.UTF_8).length);
+            long start = System.currentTimeMillis();
+            HttpURLConnection conn = (HttpURLConnection) URI.create(OPENAI_API_URL).toURL().openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Authorization", "Bearer " + OPENAI_API_KEY);
+            conn.setDoOutput(true);
+
+            try (OutputStreamWriter os = new OutputStreamWriter(conn.getOutputStream(), StandardCharsets.UTF_8)) {
+                os.write(json);
+            }
+
+            int code = conn.getResponseCode();
+            BufferedReader br = new BufferedReader(new InputStreamReader(code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream(), StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            String resp = sb.toString();
+            long dur = System.currentTimeMillis() - start;
+            log("OpenAI response: code=" + code + ", timeMs=" + dur + ", bytes=" + resp.getBytes(StandardCharsets.UTF_8).length);
+
+            if (code < 200 || code >= 300) {
+                System.out.println("[AutoSocial] OpenAI API error (" + code + "): " + resp);
+                return fallbackResponse(userMessage);
+            }
+
+            JsonObject root = JsonParser.parseString(resp).getAsJsonObject();
+            String out = null;
+
+            // Parse OpenAI response format
+            if (root.has("choices")) {
+                JsonArray choices = root.getAsJsonArray("choices");
+                if (!choices.isEmpty()) {
+                    JsonObject choice = choices.get(0).getAsJsonObject();
+                    if (choice.has("message")) {
+                        JsonObject msg = choice.getAsJsonObject("message");
+                        if (msg.has("content")) {
+                            out = msg.get("content").getAsString();
+                        }
+                    }
+                }
+            }
+
+            if (out == null) out = "";
+            log("OpenAI content length " + out.length());
+            if (out.isBlank()) {
+                log("OpenAI content empty. Raw body preview: " + (resp.length() > 200 ? resp.substring(0, 200) + "..." : resp));
+            }
+            return out;
+        } catch (Exception e) {
+            System.out.println("[AutoSocial] Error generating response via OpenAI: " + e);
+            return fallbackResponse(userMessage);
+        }
+    }
+
     private static String getString(String userMessage, String systemPrompt) {
         JsonObject body = new JsonObject();
         body.addProperty("model", MODEL);
@@ -1619,7 +1866,6 @@ public class AutoSocialLogic {
             client.player.connection.sendChat(finalSafeMsg);
         } catch (Exception e) {
             log("Failed to send chat message: " + e.getMessage());
-            if (VERBOSE) e.printStackTrace();
         }
     }
 

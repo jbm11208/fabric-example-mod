@@ -23,6 +23,7 @@ public class ClientKeybinds implements ClientModInitializer {
     private static KeyMapping reloadConfigKey;
     private static KeyMapping toggleVideoHudKey;
     private static KeyMapping openConfigKey;
+    private static KeyMapping screenshotKey;
     private static boolean SHOW_VIDEO_HUD = false;
 
     @Override
@@ -37,6 +38,8 @@ public class ClientKeybinds implements ClientModInitializer {
         toggleVideoHudKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.toggle_video_hud"));
         // Register keybinding for opening the AutoSocial config GUI
         openConfigKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.open_config"));
+        // Register keybinding for taking a screenshot
+        screenshotKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.screenshot"));
 
         // Create HUD element for showing current playing YouTube title
         ResourceLocation hudId = ResourceLocation.fromNamespaceAndPath("assets.autosocial", "now_playing_hud");
@@ -97,6 +100,14 @@ public class ClientKeybinds implements ClientModInitializer {
                 while (openConfigKey.consumeClick()) {
                     if (AutoSocialLogic.isVerbose()) System.out.println("[AutoSocial] Open Config GUI key pressed.");
                     Minecraft.getInstance().setScreen(new AutoSocialConfigScreen(Minecraft.getInstance().screen));
+                }
+            }
+            if (screenshotKey != null) {
+                while (screenshotKey.consumeClick()) {
+                    if (AutoSocialLogic.isVerbose()) {
+                        System.out.println("[AutoSocial] Screenshot key pressed.");
+                    }
+                    AutoSocialLogic.takeScreenshot();
                 }
             }
         });
