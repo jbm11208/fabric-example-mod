@@ -5,8 +5,11 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.Gson;
+import com.mojang.brigadier.CommandDispatcher;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
+import net.minecraft.client.multiplayer.ClientSuggestionProvider;
+import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
@@ -19,10 +22,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -75,6 +75,9 @@ public class AutoSocialLogic {
     // Verbose logging toggle (can be overridden in config.yml). Defaults to env AUTOSOCIAL_VERBOSE or true.
     private static volatile boolean VERBOSE = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_VERBOSE", "true"));
 
+    public static CountDownLatch screenshotLatch = new CountDownLatch(1);
+    private static boolean waitingForScreenshotPrompt = false;
+    private static String pendingScreenshotPrompt = null;
     // AI-related configuration
     private static volatile AIProvider AI_PROVIDER = AIProvider.OLLAMA;
     private static volatile String OPENAI_API_KEY = "";
@@ -588,6 +591,21 @@ public class AutoSocialLogic {
         }
 
         // Extract the part after ':' or '»' if present (player message content)
+        if (waitingForScreenshotPrompt && client.player != null) {
+            String playerName = client.player.getName().getString();
+
+            // Only capture messages from the player (not other players)
+            if (full.contains(playerName)) {
+                String content = extractContent(full);
+                if (!content.isBlank()) {
+                    screenshotLatch.countDown();
+                    pendingScreenshotPrompt = content;
+                    waitingForScreenshotPrompt = false; // Stop waiting
+                    log("Captured screenshot prompt: " + content);
+                    return; // Don't process this as a regular chat message
+                }
+            }
+        }
         String content = extractContent(full);
         log("Extracted content: " + content);
         if (content.isEmpty()) return;
@@ -1550,23 +1568,17 @@ public class AutoSocialLogic {
         if (!MODEL.toLowerCase().contains("vision") && !MODEL.toLowerCase().contains("gpt-4o")) {
             log("Model " + MODEL + " may not support vision. Consider using a vision-capable model like 'gpt-4o' or 'gpt-4-vision-preview'");
         }
-
         JsonObject message = new JsonObject();
         message.addProperty("role", "user");
-
         JsonArray content = new JsonArray();
-
         // Add text content
         JsonObject textContent = new JsonObject();
         textContent.addProperty("type", "text");
         textContent.addProperty("text", userMessage);
         content.add(textContent);
-
         // Add image content if base64Image is provided
         if (base64Image != null && !base64Image.isBlank()) {
-            // Clean base64 data by removing whitespace
             String cleanedBase64 = base64Image.replaceAll("\\s+", "").trim();
-
             // Check if the data already has a data URL prefix
             String imageUrl;
             if (cleanedBase64.startsWith("data:image/")) {
@@ -1623,26 +1635,18 @@ public class AutoSocialLogic {
         return jsonString;
     }
 
-    public static void takeScreenshot() {
+    public static void takeScreenshot(boolean customPrompt) {
         Minecraft client = Minecraft.getInstance();
-
-        // Schedule screenshot capture on main thread first
         client.execute(() -> {
             try {
                 log("Capturing screenshot on main thread...");
-
-                // Take screenshot using Minecraft's screenshot functionality
                 Screenshot.takeScreenshot(client.getMainRenderTarget(), png -> {
                     try (png) {
                         log("Screenshot captured, saving to file on main thread...");
-
                         // Save to temporary file first (this must be on main thread)
                         File temp = new File(TEMP_AUDIO_DIR, "screenshot.png");
                         png.writeToFile(temp);
-
                         log("Screenshot saved to: " + temp.getAbsolutePath() + " (" + temp.length() + " bytes)");
-
-                        // Now process the screenshot on a worker thread
                         EXECUTOR.submit(() -> {
                             try {
                                 // Read the file bytes on worker thread
@@ -1651,9 +1655,31 @@ public class AutoSocialLogic {
 
                                 String base64 = Base64.getEncoder().encodeToString(imageBytes);
                                 log("Base64 encoded, length: " + base64.length());
+                                String userMessage;
 
-                                // Send to OpenAI (this is synchronous but won't block the game anymore)
-                                String response = sendToOpenAI(base64);
+                                if (customPrompt) {
+                                    if (client.player != null) {
+                                        String playerName = client.player.getName().getString();
+                                        // Send message asking player for input
+                                        CommandDispatcher<ClientSuggestionProvider> dispatcher = client.player.connection.getCommands();
+                                        if (dispatcher.getRoot().getChildren().stream().anyMatch(node -> node.getName().equals("msg"))) {
+                                            client.player.connection.sendCommand("msg " + playerName + "  please type your question about the screenshot in chat...");
+                                        } else if (dispatcher.getRoot().getChildren().stream().anyMatch(node -> node.getName().equals("tell"))) {
+                                            client.player.connection.sendCommand("tell " + playerName + "  please type your question about the screenshot in chat...");
+                                        }
+                                    }
+                                    // Set flag to wait for player message
+                                    waitingForScreenshotPrompt = true;
+                                    pendingScreenshotPrompt = null;
+                                    screenshotLatch.await();
+                                    screenshotLatch = new CountDownLatch(1);
+                                    userMessage = (pendingScreenshotPrompt != null) ? pendingScreenshotPrompt : "Please describe the image.";
+                                    log("Captured prompt: " + userMessage);
+                                } else {
+                                    userMessage = "Please describe the image.";
+                                }
+
+                                String response = sendToOpenAI(base64, userMessage);
                                 log("OpenAI response received: " + (response != null ? response.length() : 0) + " characters");
 
                                 // Process response back on main thread for chat only
@@ -1737,13 +1763,12 @@ public class AutoSocialLogic {
         });
     }
 
-    private static String sendToOpenAI(String png) {
+    private static String sendToOpenAI(String png, String userMessage) {
         StringBuilder sys = new StringBuilder();
         sys.append(SYS_PROMPT).append(' ');
         for (String m : memory) sys.append(m).append("\n");
         sys.append("\nRemember, keep your response to 3 sentences or less. Each sentence is a maximum of 20 words. DO NOT say Your Response: or User Question:.\n");
         String systemPrompt = sys.toString();
-        String userMessage = "Please describe the image.";
         try {
             if (OPENAI_API_KEY == null || OPENAI_API_KEY.isBlank()) {
                 log("OpenAI API key not configured. Please set it in the config.");
@@ -1880,7 +1905,7 @@ public class AutoSocialLogic {
                 // Allow most characters, but replace control characters
                 if (c >= 32 && c <= 126 || c == '\n' || c == '\t') {
                     clean.append(c);
-                } else if (Character.isLetterOrDigit(c) || Character.isWhitespace(c)) {
+                } else if (Character.isLetterOrDigit(c) || Character.isWhitespace(c) || Character.isDefined(c)) {
                     clean.append(c);
                 } else {
                     clean.append('?'); // Replace problematic characters

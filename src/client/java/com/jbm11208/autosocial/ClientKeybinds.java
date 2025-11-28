@@ -24,6 +24,7 @@ public class ClientKeybinds implements ClientModInitializer {
     private static KeyMapping toggleVideoHudKey;
     private static KeyMapping openConfigKey;
     private static KeyMapping screenshotKey;
+    private static KeyMapping customScreenshotKey;
     private static boolean SHOW_VIDEO_HUD = false;
 
     @Override
@@ -40,6 +41,8 @@ public class ClientKeybinds implements ClientModInitializer {
         openConfigKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.open_config"));
         // Register keybinding for taking a screenshot
         screenshotKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.screenshot"));
+        // Register keybinding for taking a screenshot and adding a custom user prompt
+        customScreenshotKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.custom_screenshot"));
 
         // Create HUD element for showing current playing YouTube title
         ResourceLocation hudId = ResourceLocation.fromNamespaceAndPath("assets.autosocial", "now_playing_hud");
@@ -107,7 +110,15 @@ public class ClientKeybinds implements ClientModInitializer {
                     if (AutoSocialLogic.isVerbose()) {
                         System.out.println("[AutoSocial] Screenshot key pressed.");
                     }
-                    AutoSocialLogic.takeScreenshot();
+                    AutoSocialLogic.takeScreenshot(false);
+                }
+            }
+            if (customScreenshotKey != null) {
+                while (customScreenshotKey.consumeClick()) {
+                    if (AutoSocialLogic.isVerbose()) {
+                        System.out.println("[AutoSocial] Custom Screenshot key pressed.");
+                    }
+                    AutoSocialLogic.takeScreenshot(true);
                 }
             }
         });
