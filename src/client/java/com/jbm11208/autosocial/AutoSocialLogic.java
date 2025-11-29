@@ -9,7 +9,6 @@ import com.mojang.brigadier.CommandDispatcher;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.multiplayer.ClientSuggestionProvider;
-import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
@@ -75,7 +74,7 @@ public class AutoSocialLogic {
     // Verbose logging toggle (can be overridden in config.yml). Defaults to env AUTOSOCIAL_VERBOSE or true.
     private static volatile boolean VERBOSE = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_VERBOSE", "true"));
 
-    public static CountDownLatch screenshotLatch = new CountDownLatch(1);
+    public static Semaphore screenshotLatch = new Semaphore(0); // Start with 0 permits
     private static boolean waitingForScreenshotPrompt = false;
     private static String pendingScreenshotPrompt = null;
     // AI-related configuration
@@ -486,8 +485,20 @@ public class AutoSocialLogic {
     }
 
     public static void init() {
-        ClientReceiveMessageEvents.CHAT.register((message, signed_message, sender, params, timestamp) -> onChat(message));
-        ClientReceiveMessageEvents.GAME.register((message, overlay) -> onChat(message));
+        ClientReceiveMessageEvents.CHAT.register((message, signed_message, sender, params, timestamp) -> {
+            try {
+                onChat(message);
+            } catch (BrokenBarrierException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        });
+        ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
+            try {
+                onChat(message);
+            } catch (BrokenBarrierException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        });
         if (initialized) return;
         initialized = true;
         // Ensure directories exist
@@ -512,7 +523,7 @@ public class AutoSocialLogic {
         // No explicit event registration here; ChatHudMixin will forward chat messages.
     }
 
-    public static void onChat(Component messageText) {
+    public static void onChat(Component messageText) throws BrokenBarrierException, InterruptedException {
         String full = messageText.getString();
         log("Chat received: " + full);
         if (full.isEmpty()) return;
@@ -598,7 +609,7 @@ public class AutoSocialLogic {
             if (full.contains(playerName)) {
                 String content = extractContent(full);
                 if (!content.isBlank()) {
-                    screenshotLatch.countDown();
+                    screenshotLatch.release(); // Release a permit to unblock waiting thread
                     pendingScreenshotPrompt = content;
                     waitingForScreenshotPrompt = false; // Stop waiting
                     log("Captured screenshot prompt: " + content);
@@ -1671,8 +1682,7 @@ public class AutoSocialLogic {
                                     // Set flag to wait for player message
                                     waitingForScreenshotPrompt = true;
                                     pendingScreenshotPrompt = null;
-                                    screenshotLatch.await();
-                                    screenshotLatch = new CountDownLatch(1);
+                                    screenshotLatch.acquire(); // Wait for a permit (blocks until available)
                                     userMessage = (pendingScreenshotPrompt != null) ? pendingScreenshotPrompt : "Please describe the image.";
                                     log("Captured prompt: " + userMessage);
                                 } else {
