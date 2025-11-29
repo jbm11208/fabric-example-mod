@@ -5,10 +5,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.Gson;
-import com.mojang.brigadier.CommandDispatcher;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
-import net.minecraft.client.multiplayer.ClientSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
@@ -547,6 +545,23 @@ public class AutoSocialLogic {
 
         String lower = full.toLowerCase(Locale.ROOT);
 
+        // Extract the part after ':' or '»' if present (player message content)
+        if (waitingForScreenshotPrompt && client.player != null) {
+            String playerName = client.player.getName().getString();
+
+            // Only capture messages from the player (not other players)
+            if (full.contains(playerName)) {
+                String content = extractContent(full);
+                if (!content.isBlank()) {
+                    screenshotLatch.release(); // Release a permit to unblock waiting thread
+                    pendingScreenshotPrompt = content;
+                    waitingForScreenshotPrompt = false; // Stop waiting
+                    log("Captured screenshot prompt: " + content);
+                    return; // Don't process this as a regular chat message
+                }
+            }
+        }
+
         // Clear command: dynamic based on trigger word
         String clearCmd = "clear" + TRIGGER.toLowerCase(Locale.ROOT);
         if (lower.contains(clearCmd)) {
@@ -601,13 +616,16 @@ public class AutoSocialLogic {
             return;
         }
 
+        String content = extractContent(full);
+        log("Extracted content: " + content);
+        if (content.isEmpty()) return;
+
         // Extract the part after ':' or '»' if present (player message content)
         if (waitingForScreenshotPrompt && client.player != null) {
             String playerName = client.player.getName().getString();
 
             // Only capture messages from the player (not other players)
             if (full.contains(playerName)) {
-                String content = extractContent(full);
                 if (!content.isBlank()) {
                     screenshotLatch.release(); // Release a permit to unblock waiting thread
                     pendingScreenshotPrompt = content;
@@ -617,9 +635,7 @@ public class AutoSocialLogic {
                 }
             }
         }
-        String content = extractContent(full);
         log("Extracted content: " + content);
-        if (content.isEmpty()) return;
 
         if (responding) return; // avoid overlapping generations
         responding = true;
@@ -1669,16 +1685,6 @@ public class AutoSocialLogic {
                                 String userMessage;
 
                                 if (customPrompt) {
-                                    if (client.player != null) {
-                                        String playerName = client.player.getName().getString();
-                                        // Send message asking player for input
-                                        CommandDispatcher<ClientSuggestionProvider> dispatcher = client.player.connection.getCommands();
-                                        if (dispatcher.getRoot().getChildren().stream().anyMatch(node -> node.getName().equals("msg"))) {
-                                            client.player.connection.sendCommand("msg " + playerName + "  please type your question about the screenshot in chat...");
-                                        } else if (dispatcher.getRoot().getChildren().stream().anyMatch(node -> node.getName().equals("tell"))) {
-                                            client.player.connection.sendCommand("tell " + playerName + "  please type your question about the screenshot in chat...");
-                                        }
-                                    }
                                     // Set flag to wait for player message
                                     waitingForScreenshotPrompt = true;
                                     pendingScreenshotPrompt = null;
