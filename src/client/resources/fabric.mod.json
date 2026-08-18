@@ -2,9 +2,9 @@
 
     "schemaVersion": 1,
     "id": "autosocial",
-    "version": "2.2.3",
+    "version": "2.3.0",
     "name": "AutoSocial",
-    "description": "A client-side automation mod built on Fabric.",
+    "description": "Haha funny ai robot on the minecrafts (totally tubular)",
     "authors": ["jbm11208"],
     "contact": {},
     "license": "MIT",
@@ -19,8 +19,8 @@
       ]
     },
     "depends": {
-      "fabricloader": ">=0.16.0",
-      "minecraft": ">=1.21.6",
+      "fabricloader": ">=0.19.3",
+      "minecraft": ">=26.2",
       "fabric-api": "*"
     },
 	"icon": "assets/autosocial/icon.png",

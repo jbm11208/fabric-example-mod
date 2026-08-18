@@ -9,7 +9,7 @@ public class AutoSocialModMenuApi implements ModMenuApi {
     @Override
     public ConfigScreenFactory<?> getModConfigScreenFactory() {
         return parent -> {
-            return new AutoSocialConfigScreen(Minecraft.getInstance().screen);
+            return new AutoSocialConfigScreen(Minecraft.getInstance().gui.screen());
         };
     }
 }

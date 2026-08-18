@@ -1,16 +1,18 @@
 package com.jbm11208.autosocial;
 
+import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.gui.Font;
-import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
 import org.lwjgl.glfw.GLFW;
 import com.jbm11208.autosocial.ui.AutoSocialConfigScreen;
 
@@ -30,24 +32,26 @@ public class ClientKeybinds implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         if (AutoSocialLogic.isVerbose()) System.out.println("[AutoSocial] ClientKeybinds initializing...");
-
+        KeyMapping.Category CATEGORY = KeyMapping.Category.register(
+                Identifier.fromNamespaceAndPath("autosocial", "category")
+        );
         // Register keybinding for skipping current audio; appears in Controls -> Key Binds
-        skipKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.skip"));
+        skipKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.autosocial.skip", InputConstants.Type.KEYSYM, InputConstants.KEY_PERIOD, CATEGORY));
         // Register keybinding for reloading config
-        reloadConfigKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.reload_config"));
+        reloadConfigKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.autosocial.reload_config", InputConstants.Type.KEYSYM, InputConstants.KEY_NUMPAD6, CATEGORY));
         // Register keybinding for toggling the Now Playing HUD
-        toggleVideoHudKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.toggle_video_hud"));
+        toggleVideoHudKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.autosocial.toggle_video_hud", InputConstants.Type.KEYSYM, InputConstants.KEY_NUMPAD8, CATEGORY));
         // Register keybinding for opening the AutoSocial config GUI
-        openConfigKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.open_config"));
+        openConfigKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.autosocial.open_config", InputConstants.Type.KEYSYM, InputConstants.KEY_NUMPAD5, CATEGORY));
         // Register keybinding for taking a screenshot
-        screenshotKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.screenshot"));
+        screenshotKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.autosocial.screenshot", InputConstants.Type.KEYSYM, InputConstants.KEY_NUMPAD9, CATEGORY));
         // Register keybinding for taking a screenshot and adding a custom user prompt
-        customScreenshotKey = KeyBindingHelper.registerKeyBinding(createKeyMapping("key.autosocial.custom_screenshot"));
+        customScreenshotKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.autosocial.custom_screenshot", InputConstants.Type.KEYSYM, InputConstants.KEY_NUMPAD7, CATEGORY));
 
         // Create HUD element for showing current playing YouTube title
-        ResourceLocation hudId = ResourceLocation.fromNamespaceAndPath("assets.autosocial", "now_playing_hud");
+        Identifier hudId = Identifier.fromNamespaceAndPath("assets.autosocial", "now_playing_hud");
 
-        HudElement element = (GuiGraphics drawContext, DeltaTracker tickDelta) -> {
+        HudElement element = (GuiGraphicsExtractor drawContext, DeltaTracker tickDelta) -> {
             if (!SHOW_VIDEO_HUD) return;
 
             String title = AutoSocialLogic.getCurrentPlayingTitle();
@@ -67,7 +71,7 @@ public class ClientKeybinds implements ClientModInitializer {
 
             int pad = 6;
             drawContext.fill(x - pad, y - pad, x + tw + pad, y + th + pad, 0xAA000000);
-            drawContext.drawString(font, text, x, y, 0xFFFFFFFF, false);
+            drawContext.text(font, text, x, y, 0xFFFFFFFF, false);
         };
 
         // Register the HUD element
@@ -95,6 +99,11 @@ public class ClientKeybinds implements ClientModInitializer {
             if (toggleVideoHudKey != null) {
                 while (toggleVideoHudKey.consumeClick()) {
                     SHOW_VIDEO_HUD = !SHOW_VIDEO_HUD;
+                    if (SHOW_VIDEO_HUD) {
+                        client.gui.hud.setOverlayMessage(Component.literal("§a\"Now Playing\" HUD Enabled"), false);
+                    } else {
+                        client.gui.hud.setOverlayMessage(Component.literal("§c\"Now Playing\" HUD Disabled"), false);
+                    }
                     if (AutoSocialLogic.isVerbose())
                         System.out.println("[AutoSocial] Toggle Now Playing HUD -> " + (SHOW_VIDEO_HUD ? "ON" : "OFF"));
                 }
@@ -102,7 +111,7 @@ public class ClientKeybinds implements ClientModInitializer {
             if (openConfigKey != null) {
                 while (openConfigKey.consumeClick()) {
                     if (AutoSocialLogic.isVerbose()) System.out.println("[AutoSocial] Open Config GUI key pressed.");
-                    Minecraft.getInstance().setScreen(new AutoSocialConfigScreen(Minecraft.getInstance().screen));
+                    Minecraft.getInstance().setScreenAndShow(new AutoSocialConfigScreen(Minecraft.getInstance().gui.screen()));
                 }
             }
             if (screenshotKey != null) {
@@ -122,34 +131,5 @@ public class ClientKeybinds implements ClientModInitializer {
                 }
             }
         });
-    }
-
-    private static KeyMapping createKeyMapping(String translationKey) {
-        try {
-            // Try the modern constructor first (String, int, String)
-            Constructor<KeyMapping> modernCtor = KeyMapping.class.getConstructor(String.class, int.class, String.class);
-            return modernCtor.newInstance(translationKey, GLFW.GLFW_KEY_UNKNOWN, "key.categories.misc");
-        } catch (NoSuchMethodException modernMissing) {
-            try {
-                // Fallback to category-based constructor
-                Constructor<KeyMapping> mojangCtor = KeyMapping.class.getConstructor(String.class, int.class, KeyMapping.Category.class);
-                return mojangCtor.newInstance(translationKey, GLFW.GLFW_KEY_UNKNOWN, KeyMapping.Category.MISC);
-            } catch (NoSuchMethodException mojangMissing) {
-                try {
-                    // Fallback to enum Category signature: (String, int, KeyMapping.Category)
-                    Class<?> categoryClass = Class.forName("net.minecraft.client.KeyMapping$Category");
-                    Field miscField = categoryClass.getField("MISC");
-                    Object misc = miscField.get(null);
-                    Constructor<KeyMapping> yarnCtor = KeyMapping.class.getConstructor(String.class, int.class, categoryClass);
-                    return yarnCtor.newInstance(translationKey, GLFW.GLFW_KEY_UNKNOWN, misc);
-                } catch (Throwable t) {
-                    throw new RuntimeException("Failed to construct KeyMapping with any known signature", t);
-                }
-            } catch (Throwable t) {
-                throw new RuntimeException("Failed to construct KeyMapping", t);
-            }
-        } catch (Throwable t) {
-            throw new RuntimeException("Failed to construct KeyMapping", t);
-        }
     }
 }

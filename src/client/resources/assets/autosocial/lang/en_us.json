@@ -1,0 +1,11 @@
+{
+  "key.category.autosocial.category": "AI Keybind Config",
+
+
+  "key.autosocial.skip": "Skip Current Audio",
+  "key.autosocial.reload_config": "Reload Current Configuration",
+  "key.autosocial.toggle_video_hud": "Toggle \"Now Playing\" HUD",
+  "key.autosocial.open_config": "Open Configuration Screen",
+  "key.autosocial.screenshot": "Send Screenshot to AI (no msg)",
+  "key.autosocial.custom_screenshot": "Send Screenshot to AI (w/ msg)"
+}

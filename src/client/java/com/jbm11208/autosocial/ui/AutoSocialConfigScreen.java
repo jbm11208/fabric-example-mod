@@ -130,9 +130,8 @@ public class AutoSocialConfigScreen extends Screen {
         this.addRenderableWidget(this.TTSon);
         y += 28;
 
-        this.ttsProviderButton = CycleButton.<TTSProvider>builder(provider -> Component.literal("TTS Provider: " + provider.getDisplayName()))
+        this.ttsProviderButton = CycleButton.builder(provider -> Component.literal("TTS Provider: " + provider.getDisplayName()), snap.ttsProvider())
                 .withValues(TTSProvider.values())
-                .withInitialValue(snap.ttsProvider())
                 .create(xLeft, y, fieldW, fieldH, Component.literal("TTS Provider"));
         this.addRenderableWidget(this.ttsProviderButton);
         y += 28;
@@ -151,9 +150,8 @@ public class AutoSocialConfigScreen extends Screen {
         this.addRenderableWidget(this.elevenlabsVoiceIdField);
         y += 24;
 
-        this.providerButton = CycleButton.<AutoSocialLogic.AIProvider>builder(provider -> Component.literal("AI Provider: " + provider.getDisplayName()))
+        this.providerButton = CycleButton.<AutoSocialLogic.AIProvider>builder(provider -> Component.literal("AI Provider: " + provider.getDisplayName()), snap.aiProvider())
                 .withValues(AutoSocialLogic.AIProvider.values())
-                .withInitialValue(snap.aiProvider())
                 .create(xLeft, y, fieldW, fieldH, Component.literal("AI Provider"));
         this.addRenderableWidget(this.providerButton);
         y += 28;
@@ -225,6 +223,6 @@ public class AutoSocialConfigScreen extends Screen {
 
     @Override
     public void onClose() {
-        Minecraft.getInstance().setScreen(parent);
+        Minecraft.getInstance().setScreenAndShow(parent);
     }
 }

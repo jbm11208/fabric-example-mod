@@ -1667,7 +1667,7 @@ public class AutoSocialLogic {
         client.execute(() -> {
             try {
                 log("Capturing screenshot on main thread...");
-                Screenshot.takeScreenshot(client.getMainRenderTarget(), png -> {
+                Screenshot.takeScreenshot(client.gameRenderer.mainRenderTarget(), png -> {
                     try (png) {
                         log("Screenshot captured, saving to file on main thread...");
                         // Save to temporary file first (this must be on main thread)

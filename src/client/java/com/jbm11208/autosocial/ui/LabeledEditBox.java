@@ -1,7 +1,7 @@
 package com.jbm11208.autosocial.ui;
 
 import net.minecraft.client.gui.Font;
-import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.network.chat.Component;
 
@@ -17,9 +17,9 @@ public class LabeledEditBox extends EditBox {
     }
 
     @Override
-    public void renderWidget(GuiGraphics guiGraphics, int mouseX, int mouseY, float delta) {
+    public void extractWidgetRenderState(GuiGraphicsExtractor guiGraphics, int mouseX, int mouseY, float delta) {
         // Draw the base EditBox first
-        super.renderWidget(guiGraphics, mouseX, mouseY, delta);
+        super.extractWidgetRenderState(guiGraphics, mouseX, mouseY, delta);
         if (myFont == null || label == null)
             return;
 
@@ -37,7 +37,7 @@ public class LabeledEditBox extends EditBox {
 
         // Slightly grayish white for better visibility
         int labelColor = 0xFFE0E0E0;
-        guiGraphics.drawString(
+        guiGraphics.text(
                 myFont,
                 label,
                 textX,
