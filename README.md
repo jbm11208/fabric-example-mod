@@ -7,7 +7,7 @@ Cameron7108 for the python code that inspired this mod
 
 ## Setup
 
-1. Be sure you have Fabric installed on Minecraft 1.21.6
+1. Be sure you have Fabric installed on Minecraft 26.2
 
 2. (IF USING OLLAMA) Download Ollama from https://ollama.com and pull the ai model you wish to use (if choosing a cloud model, be sure to run it before using in the mod so you can sign in to Ollama from the terminal)
 
