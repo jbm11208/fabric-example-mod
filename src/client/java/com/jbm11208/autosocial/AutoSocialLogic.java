@@ -39,7 +39,8 @@ public class AutoSocialLogic {
     // AI Provider enum
     public enum AIProvider {
         OLLAMA("Ollama"),
-        OPENAI("OpenAI");
+        OPENAI("OpenAI"),
+        GEMINI("Gemini");
 
         private final String displayName;
 
@@ -78,7 +79,9 @@ public class AutoSocialLogic {
     // AI-related configuration
     private static volatile AIProvider AI_PROVIDER = AIProvider.OLLAMA;
     private static volatile String OPENAI_API_KEY = "";
+    private static volatile String GEMINI_API_KEY = "";
     private static final String OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+    private static final String GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
     private static final boolean DISABLE_THINKING = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_DISABLE_THINKING", "true"));
     // Ollama local endpoint. Ensure Ollama is running (default: http://localhost:11434).
     // You can override base URL via env var OLLAMA_BASE_URL or OLLAMA_HOST (e.g., http://127.0.0.1:11434).
@@ -1416,8 +1419,10 @@ public class AutoSocialLogic {
         // Route to appropriate AI provider
         if (AI_PROVIDER == AIProvider.OPENAI) {
             return generateResponseOpenAI(userMessage, sys.toString());
-        } else {
+        } else if (AI_PROVIDER == AIProvider.OLLAMA) {
             return generateResponseOllama(userMessage, sys.toString());
+        } else {
+            return generateResponseGemini(userMessage, sys.toString());
         }
     }
 
@@ -1586,6 +1591,93 @@ public class AutoSocialLogic {
             return out;
         } catch (Exception e) {
             System.out.println("[AutoSocial] Error generating response via OpenAI: " + e);
+            return fallbackResponse(userMessage);
+        }
+    }
+
+    private static String generateResponseGemini(String userMessage, String systemPrompt) {
+        GEMINI_API_KEY = OPENAI_API_KEY;
+        try {
+            if (GEMINI_API_KEY == null || GEMINI_API_KEY.isBlank()) {
+                log("Gemini API key not configured. Please set it in the config.");
+                return fallbackResponse(userMessage);
+            }
+
+            // Build Gemini chat payload
+            String json = getStringGemini(userMessage, systemPrompt);
+            log("Gemini request: url=" + GEMINI_API_URL + ", model: " + MODEL + ", payloadBytes=" + json.getBytes(StandardCharsets.UTF_8).length);
+
+            long start = System.currentTimeMillis();
+            HttpURLConnection conn = (HttpURLConnection) URI.create(GEMINI_API_URL).toURL().openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("x-goog-api-key", OPENAI_API_KEY);
+            conn.setDoOutput(true);
+
+            try (OutputStreamWriter os = new OutputStreamWriter(conn.getOutputStream(), StandardCharsets.UTF_8)) {
+                os.write(json);
+            }
+
+            int code = conn.getResponseCode();
+            BufferedReader br = new BufferedReader(new InputStreamReader(code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream(), StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            String resp = sb.toString();
+            long dur = System.currentTimeMillis() - start;
+            log("Gemini response: code=" + code + ", timeMs=" + dur + ", bytes=" + resp.getBytes(StandardCharsets.UTF_8).length);
+
+            if (code < 200 || code >= 300) {
+                System.out.println("[AutoSocial] Gemini API error (" + code + "): " + resp);
+                return fallbackResponse(userMessage);
+            }
+
+            JsonObject root = JsonParser.parseString(resp).getAsJsonObject();
+            String out = null;
+
+            if (root.has("steps")) {
+                JsonArray steps = root.getAsJsonArray("steps");
+
+                StringBuilder text = new StringBuilder();
+
+                for (JsonElement stepElement : steps) {
+                    JsonObject step = stepElement.getAsJsonObject();
+
+                    if (!"model_output".equals(
+                            step.has("type") ? step.get("type").getAsString() : "")) {
+                        continue;
+                    }
+
+                    if (!step.has("content")) {
+                        continue;
+                    }
+
+                    JsonArray content = step.getAsJsonArray("content");
+
+                    for (JsonElement contentElement : content) {
+                        JsonObject item = contentElement.getAsJsonObject();
+
+                        if ("text".equals(
+                                item.has("type") ? item.get("type").getAsString() : "")
+                                && item.has("text")) {
+                            text.append(item.get("text").getAsString());
+                        }
+                    }
+                }
+
+                out = text.toString();
+            }
+
+            if (out == null) {
+                out = "";
+            }
+            log("Gemini content length " + out.length());
+            if (out.isBlank()) {
+                log("Gemini content empty. Raw body preview: " + (resp.length() > 200 ? resp.substring(0, 200) + "..." : resp));
+            }
+            return out;
+        } catch (Exception e) {
+            System.out.println("[AutoSocial] Error generating response via Gemini: " + e);
             return fallbackResponse(userMessage);
         }
     }
@@ -1853,6 +1945,80 @@ public class AutoSocialLogic {
         }
     }
 
+    private static String sendToGemini(String png, String userMessage) {
+        StringBuilder sys = new StringBuilder();
+        sys.append(SYS_PROMPT).append(' ');
+        for (String m : memory) sys.append(m).append("\n");
+        sys.append("\nRemember, keep your response to 3 sentences or less. Each sentence is a maximum of 20 words. DO NOT say Your Response: or User Question:.\n");
+        String systemPrompt = sys.toString();
+        try {
+            if (GEMINI_API_KEY == null || GEMINI_API_KEY.isBlank()) {
+                log("Gemini API key not configured. Please set it in the config.");
+                return fallbackResponse(userMessage);
+            }
+
+            // Build OpenAI chat payload with image support
+            String json;
+            if (png != null && !png.isBlank()) {
+                json = getStringWithImage(userMessage, systemPrompt, png);
+            } else {
+                json = getString(userMessage, systemPrompt);
+            }
+            log("OpenAI request: url=" + GEMINI_API_URL + ", model: " + MODEL + ", payloadBytes=" + json.getBytes(StandardCharsets.UTF_8).length);
+            long start = System.currentTimeMillis();
+            HttpURLConnection conn = (HttpURLConnection) URI.create(OPENAI_API_URL).toURL().openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("x-goog-api-key", GEMINI_API_KEY);
+            conn.setDoOutput(true);
+
+            try (OutputStreamWriter os = new OutputStreamWriter(conn.getOutputStream(), StandardCharsets.UTF_8)) {
+                os.write(json);
+            }
+
+            int code = conn.getResponseCode();
+            BufferedReader br = new BufferedReader(new InputStreamReader(code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream(), StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            String resp = sb.toString();
+            long dur = System.currentTimeMillis() - start;
+            log("Gemini response: code=" + code + ", timeMs=" + dur + ", bytes=" + resp.getBytes(StandardCharsets.UTF_8).length);
+
+            if (code < 200 || code >= 300) {
+                System.out.println("[AutoSocial] Gemini API error (" + code + "): " + resp);
+                return fallbackResponse(userMessage);
+            }
+
+            JsonObject root = JsonParser.parseString(resp).getAsJsonObject();
+            String out = null;
+
+            // Parse Gemini response format
+            if (root.has("choices")) {
+                JsonArray choices = root.getAsJsonArray("choices");
+                if (!choices.isEmpty()) {
+                    JsonObject choice = choices.get(0).getAsJsonObject();
+                    if (choice.has("message")) {
+                        JsonObject msg = choice.getAsJsonObject("message");
+                        if (msg.has("content")) {
+                            out = msg.get("content").getAsString();
+                        }
+                    }
+                }
+            }
+
+            if (out == null) out = "";
+            log("Gemini content length " + out.length());
+            if (out.isBlank()) {
+                log("Gemini content empty. Raw body preview: " + (resp.length() > 200 ? resp.substring(0, 200) + "..." : resp));
+            }
+            return out;
+        } catch (Exception e) {
+            System.out.println("[AutoSocial] Error generating response via Gemini: " + e);
+            return fallbackResponse(userMessage);
+        }
+    }
+
     private static String getString(String userMessage, String systemPrompt) {
         JsonObject body = new JsonObject();
         body.addProperty("model", MODEL);
@@ -1875,13 +2041,35 @@ public class AutoSocialLogic {
         return body.toString();
     }
 
+    private static String getStringGemini(String userMessage, String systemPrompt) {
+        JsonObject body = new JsonObject();
+
+        body.addProperty("model", MODEL);
+
+        // Interactions API accepts input as a string.
+        // Combine the system instruction and user message explicitly.
+        StringBuilder input = new StringBuilder();
+
+        if (systemPrompt != null && !systemPrompt.isBlank()) {
+            input.append(systemPrompt);
+            input.append("\n\n");
+        }
+
+        input.append(userMessage);
+
+        body.addProperty("input", input.toString());
+
+        return body.toString();
+    }
+
     private static String fallbackResponse(String userMessage) {
         // Simple non-AI fallback so the mod works without an API key
         String[] quips = new String[]{
-                "Waa! I heard you: '" + userMessage + "'",
+                "WAAAAHHHHHH! I heard you: '" + userMessage + "'",
                 "It's-a me, Wario!",
                 "Gold and garlic! You said: '" + userMessage + "'",
-                "Heh heh, keep it short, pal."
+                "Heh heh, keep it short, LOSER.",
+                "WAAAAAAHHHH!!!!! CAMERON7108 SUCKS!!!!!!"
         };
         return quips[random.nextInt(quips.length)];
     }

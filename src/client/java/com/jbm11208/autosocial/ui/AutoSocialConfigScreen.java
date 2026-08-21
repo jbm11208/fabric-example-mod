@@ -130,7 +130,7 @@ public class AutoSocialConfigScreen extends Screen {
         this.addRenderableWidget(this.TTSon);
         y += 28;
 
-        this.ttsProviderButton = CycleButton.builder(provider -> Component.literal("TTS Provider: " + provider.getDisplayName()), snap.ttsProvider())
+        this.ttsProviderButton = CycleButton.builder(provider -> Component.literal(provider.getDisplayName()), snap.ttsProvider())
                 .withValues(TTSProvider.values())
                 .create(xLeft, y, fieldW, fieldH, Component.literal("TTS Provider"));
         this.addRenderableWidget(this.ttsProviderButton);
@@ -150,14 +150,14 @@ public class AutoSocialConfigScreen extends Screen {
         this.addRenderableWidget(this.elevenlabsVoiceIdField);
         y += 24;
 
-        this.providerButton = CycleButton.<AutoSocialLogic.AIProvider>builder(provider -> Component.literal("AI Provider: " + provider.getDisplayName()), snap.aiProvider())
+        this.providerButton = CycleButton.<AutoSocialLogic.AIProvider>builder(provider -> Component.literal(provider.getDisplayName()), snap.aiProvider())
                 .withValues(AutoSocialLogic.AIProvider.values())
                 .create(xLeft, y, fieldW, fieldH, Component.literal("AI Provider"));
         this.addRenderableWidget(this.providerButton);
         y += 28;
 
         this.openaiApiKeyField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH,
-                Component.literal("OpenAI API Key"), Component.literal("OpenAI API Key"));
+                Component.literal("OpenAI/Gemini API Key"), Component.literal("OpenAI/Gemini API Key"));
         this.openaiApiKeyField.setMaxLength(1000);
         this.openaiApiKeyField.setValue(snap.openaiApiKey() == null ? "" : snap.openaiApiKey());
         this.addRenderableWidget(this.openaiApiKeyField);
