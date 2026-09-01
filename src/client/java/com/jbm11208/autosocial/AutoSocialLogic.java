@@ -73,6 +73,8 @@ public class AutoSocialLogic {
     // Verbose logging toggle (can be overridden in config.yml). Defaults to env AUTOSOCIAL_VERBOSE or true.
     private static volatile boolean VERBOSE = !"false".equalsIgnoreCase(System.getenv().getOrDefault("AUTOSOCIAL_VERBOSE", "true"));
 
+    public static volatile List<String> PlayerList = null;
+
     public static Semaphore screenshotLatch = new Semaphore(0); // Start with 0 permits
     private static boolean waitingForScreenshotPrompt = false;
     private static String pendingScreenshotPrompt = null;
@@ -112,6 +114,7 @@ public class AutoSocialLogic {
     private static volatile List<String> YTDLP_CMD = null;
     // Configurable yt-dlp executable path (can be overridden in config.yml). Empty means: probe PATH.
     private static volatile String YTDLP_PATH = "";
+    private static volatile String PLAYERBLACKLIST = "";
 
     private static synchronized boolean ensureYtDlp() {
         if (YTDLP_CMD == null) {
@@ -144,11 +147,11 @@ public class AutoSocialLogic {
     }
 
     // Snapshot for GUI/editing
-    public record ConfigSnapshot(String model, String aiName, String trigger, String ytDlpPath,
+    public record ConfigSnapshot(String model, String aiName, String trigger, String ytDlpPath, String playerBlacklist,
                                  double temperature, double volume, boolean verbose, boolean tts, String sysPrompt,
                                  AIProvider aiProvider, String openaiApiKey, TTSClient.TTSProvider ttsProvider,
                                  String elevenlabsApiKey, String elevenlabsVoiceId, boolean botPrefix) {
-        public ConfigSnapshot(String model, String aiName, String trigger, String ytDlpPath,
+        public ConfigSnapshot(String model, String aiName, String trigger, String ytDlpPath, String playerBlacklist,
                               double temperature, double volume, boolean verbose, boolean tts, String sysPrompt,
                               AIProvider aiProvider, String openaiApiKey, TTSClient.TTSProvider ttsProvider,
                               String elevenlabsApiKey, String elevenlabsVoiceId, boolean botPrefix) {
@@ -156,6 +159,7 @@ public class AutoSocialLogic {
             this.aiName = aiName;
             this.trigger = trigger;
             this.ytDlpPath = ytDlpPath;
+            this.playerBlacklist = playerBlacklist;
             this.temperature = temperature;
             this.volume = volume;
             this.verbose = verbose;
@@ -171,7 +175,7 @@ public class AutoSocialLogic {
     }
 
     public static ConfigSnapshot getConfigSnapshot() {
-        return new ConfigSnapshot(MODEL, AI_NAME, TRIGGER, YTDLP_PATH, TEMPERATURE, AUDIO_VOLUME, VERBOSE, TTS, SYS_PROMPT,
+        return new ConfigSnapshot(MODEL, AI_NAME, TRIGGER, YTDLP_PATH, PLAYERBLACKLIST, TEMPERATURE, AUDIO_VOLUME, VERBOSE, TTS, SYS_PROMPT,
                 AI_PROVIDER, OPENAI_API_KEY, TTS_PROVIDER, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, BOT_PREFIX);
     }
 
@@ -182,6 +186,7 @@ public class AutoSocialLogic {
             if (s.aiName() != null && !s.aiName().isBlank()) AI_NAME = s.aiName().trim();
             if (s.trigger() != null && !s.trigger().isBlank()) TRIGGER = s.trigger().trim();
             YTDLP_PATH = s.ytDlpPath() == null ? "" : s.ytDlpPath().trim();
+            if (s.playerBlacklist() != null) PLAYERBLACKLIST = s.playerBlacklist().trim();
             TEMPERATURE = s.temperature();
             AUDIO_VOLUME = s.volume();
             VERBOSE = s.verbose();
@@ -193,6 +198,7 @@ public class AutoSocialLogic {
             ELEVENLABS_API_KEY = s.elevenlabsApiKey();
             ELEVENLABS_VOICE_ID = s.elevenlabsVoiceId();
             BOT_PREFIX = s.botPrefix();
+            PlayerList = Arrays.asList(PLAYERBLACKLIST.split("\\s*,\\s*"));
 
             // Persist to YAML file
             if (!CONFIG_FILE.getParentFile().exists()) Files.createDirectories(CONFIG_FILE.getParentFile().toPath());
@@ -201,9 +207,11 @@ public class AutoSocialLogic {
             sb.append("# AutoSocial configuration").append(nl);
             sb.append("model: ").append(MODEL).append(nl);
             sb.append("yt_dlp_path: ").append((YTDLP_PATH == null ? "" : YTDLP_PATH.replace("\\", "/"))).append(nl);
+            sb.append("player_blacklist: ").append(PLAYERBLACKLIST).append(nl);
             sb.append("ai_name: ").append(AI_NAME).append(nl);
             sb.append("trigger: ").append(TRIGGER).append(nl);
             sb.append("temperature: ").append(TEMPERATURE).append(nl);
+            sb.append("volume: ").append(AUDIO_VOLUME).append(nl);
             sb.append("verbose: ").append(VERBOSE ? "true" : "false").append(nl);
             sb.append("tts: ").append(TTS ? "true" : "false").append(nl);   // <-- write TTS option
             sb.append("ai_provider: ").append(AI_PROVIDER.name()).append(nl);   // <-- write AI provider
@@ -332,6 +340,7 @@ public class AutoSocialLogic {
             String aiName = null;
             String trigger = null;
             String ytDlpPath = null;
+            String playerBlacklist = null;
             Double temperature = null;
             Double volume = null;
             Boolean verboseOpt = null;
@@ -403,6 +412,10 @@ public class AutoSocialLogic {
                     ytDlpPath = trim1;
                     continue;
                 }
+                if (trimmed.toLowerCase(Locale.ROOT).startsWith("player_blacklist:")) {
+                    playerBlacklist = trim1;
+                    continue;
+                }
                 if (trimmed.toLowerCase(Locale.ROOT).startsWith("temperature:")) {
                     if (!trim1.isEmpty()) {
                         try {
@@ -453,6 +466,7 @@ public class AutoSocialLogic {
             if (aiName != null && !aiName.isBlank()) AI_NAME = aiName;
             if (trigger != null && !trigger.isBlank()) TRIGGER = trigger;
             if (ytDlpPath != null) YTDLP_PATH = ytDlpPath;
+            if (playerBlacklist != null) PLAYERBLACKLIST = playerBlacklist;
             if (temperature != null) TEMPERATURE = temperature;
             if (volume != null) AUDIO_VOLUME = volume;
             if (verboseOpt != null) VERBOSE = verboseOpt;
@@ -464,7 +478,7 @@ public class AutoSocialLogic {
             if (elevenlabsVoiceId != null && !elevenlabsVoiceId.isBlank()) ELEVENLABS_VOICE_ID = elevenlabsVoiceId;
             if (ttsProvider != null && !ttsProvider.isBlank())
                 TTS_PROVIDER = TTSClient.TTSProvider.valueOf(ttsProvider);
-
+            PlayerList = Arrays.asList(PLAYERBLACKLIST.split("\\s*,\\s*"));
             return true;
         } catch (Exception e) {
             System.out.println("[AutoSocial] Failed to load config.yml: " + e);
@@ -543,6 +557,16 @@ public class AutoSocialLogic {
             if (full.contains(playerName) && full.contains("[AI]")) {
                 log("Ignoring our own bot message (from " + playerName + " containing [AI]).");
                 return;
+            }
+        }
+
+        // Ignore message if player username is blacklisted
+        if (PlayerList != null && !PlayerList.isEmpty()) {
+            for (String blockedPlayer : PlayerList) {
+                if (full.contains(blockedPlayer) && blockedPlayer.length() >= 2) {
+                    full = "Hello " + AI_NAME + ". A player by the name of " + blockedPlayer + " tried to send you a message, but they have been BANNED from doing so for crimes of unspeakable evil. Please shame them for their crimes (feel free to make up some sort of silly evil crime they committed to shame them about)";
+                    break;
+                }
             }
         }
 

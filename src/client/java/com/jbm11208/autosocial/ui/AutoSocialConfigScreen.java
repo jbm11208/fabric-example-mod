@@ -17,6 +17,7 @@ public class AutoSocialConfigScreen extends Screen {
     private EditBox aiNameField;
     private EditBox triggerField;
     private EditBox ytDlpPathField;
+    private EditBox playerBlacklistField;
     private EditBox temperatureField;
     private EditBox sysPromptField;
     private Checkbox verboseCheck;
@@ -88,6 +89,12 @@ public class AutoSocialConfigScreen extends Screen {
         this.ytDlpPathField.setMaxLength(1000);
         this.ytDlpPathField.setValue(snap.ytDlpPath() == null ? "" : snap.ytDlpPath());
         this.addRenderableWidget(this.ytDlpPathField);
+        y += 24;
+
+        this.playerBlacklistField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH, Component.literal("Player Blacklist (separated by comma)"), Component.literal("Player1,Player2"));
+        this.playerBlacklistField.setValue(snap.playerBlacklist());
+        this.playerBlacklistField.setMaxLength(1000);
+        this.addRenderableWidget(this.playerBlacklistField);
         y += 24;
 
         this.temperatureField = new LabeledEditBox(this.font, xLeft, y, fieldW, fieldH,
@@ -183,6 +190,7 @@ public class AutoSocialConfigScreen extends Screen {
         String aiName = this.aiNameField.getValue().trim();
         String trigger = this.triggerField.getValue().trim();
         String yt = this.ytDlpPathField.getValue().trim();
+        String blacklist = this.playerBlacklistField.getValue().trim();
         boolean verbose = this.verboseCheck.selected();
         boolean botPrefix = this.botPrefixCheck.selected();
         String sys = this.sysPromptField.getValue();
@@ -199,7 +207,7 @@ public class AutoSocialConfigScreen extends Screen {
         }
         double vol = this.volumeSlider.getValue();
         AutoSocialLogic.ConfigSnapshot s = new AutoSocialLogic.ConfigSnapshot(
-                model, aiName, trigger, yt, temp, vol, verbose, tts, sys, provider, apiKey,
+                model, aiName, trigger, yt, blacklist, temp, vol, verbose, tts, sys, provider, apiKey,
                 ttsProvider, elevenlabsApiKey, elevenlabsVoiceId, botPrefix);
         AutoSocialLogic.applyAndSaveConfig(s);
         this.onClose();
